@@ -8,7 +8,8 @@ It has only been tested with a Raspberry Pi Zero 2W, but should work with all de
 
 In order to avoid flickering, follow these steps (taken from https://github.com/hzeller/rpi-rgb-led-matrix?tab=readme-ov-file#troubleshooting):
 
-- Set `dtparam=audio=off` in `/boot/firmware/config.txt`
+- Set `dtparam=audio=off` in `/boot/firmware/config.txt` (disables audio)
+- Set `dtoverlay=disable-bt` in `/boot/firmware/config.txt` (disables bluetooth)
 - Add `isolcpus=3` at the end of `/boot/firmware/cmdline.txt`
 - Run
 
@@ -34,6 +35,9 @@ git clone --recurse-submodules https://github.com/tronbyt/tronberry.git
 cd tronberry
 make
 ```
+
+Compilation on the device is slow, so you may consider cross-compiling the binary on
+a more powerful machine using `docker build -f Dockerfile.cross --output . .`.
 
 ## Running
 

@@ -1,0 +1,42 @@
+# Stage 1: The cross-compilation environment
+FROM ubuntu:24.04 AS builder
+
+# Install dependencies for aarch64 cross-compilation, inspired by the project's CI setup.
+RUN dpkg --add-architecture arm64 && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    git \
+    make \
+    crossbuild-essential-arm64 \
+    libwebp-dev:arm64 \
+    libssl-dev:arm64 \
+    zlib1g-dev:arm64 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set up the environment for aarch64 cross-compilation
+ENV CROSS_COMPILE=aarch64-linux-gnu-
+ENV PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig
+
+WORKDIR /usr/src/app
+
+# Copy the entire project context
+COPY . .
+
+# Initialize submodules
+RUN git submodule update --init --recursive
+
+# Build the project using the cross-compiler.
+# Explicitly pass the cross-compiler variables and override CFLAGS to ensure the correct architecture is targeted.
+RUN make \
+    CXX=${CROSS_COMPILE}g++ \
+    CC=${CROSS_COMPILE}gcc \
+    AR=${CROSS_COMPILE}ar \
+    CFLAGS="-W -Wall -Wextra -Wno-unused-parameter -O2 -fPIC -march=armv8-a"
+
+# Strip the binary to reduce its size
+RUN ${CROSS_COMPILE}strip tronberry
+
+# Stage 2: Create a minimal final image with only the binary
+FROM scratch
+COPY --from=builder /usr/src/app/tronberry /tronberry
+CMD ["/tronberry"]
