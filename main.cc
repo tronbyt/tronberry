@@ -145,6 +145,10 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
+  static std::atomic<int> next_dwell_secs(0);
+  static std::atomic<bool> next_immediate(false);
+  static std::atomic<int> ws_message_counter(0);
+
   RGBMatrix *matrix = CreateMatrixFromOptions(matrix_options, runtime_options);
   if (!matrix) {
     std::cerr << "Failed to initialize RGB matrix" << std::endl;
@@ -161,6 +165,7 @@ int main(int argc, char *argv[]) {
     std::string data;
     int brightness;
     int dwell_secs;
+    bool immediate = false;
   };
   std::queue<ResponseData> response_queue;
   const size_t max_queue_size = 1;
@@ -172,8 +177,14 @@ int main(int argc, char *argv[]) {
       INITIAL_BRIGHTNESS, use_websocket ? 0 : INITIAL_DWELL_SECS};
   response_queue.push(std::move(startup_response));
 
+  std::thread fetch_thread;
+  ix::WebSocket ws_client;
+
   auto add_to_queue = [&](ResponseData response) {
     std::unique_lock<std::mutex> lock(queue_mutex);
+    if (response.immediate && !response_queue.empty()) {
+      response_queue.pop();
+    }
     queue_not_full.wait(lock, [&]() {
       return response_queue.size() < max_queue_size || !running;
     });
@@ -181,58 +192,76 @@ int main(int argc, char *argv[]) {
       return;
     }
     response_queue.push(std::move(response));
+    if (use_websocket) {
+      ws_message_counter++;
+      nlohmann::json queued_msg;
+      queued_msg["queued"] = ws_message_counter.load();
+      ws_client.send(queued_msg.dump());
+    }
     queue_not_empty.notify_one();
   };
 
-  std::thread fetch_thread;
-  ix::WebSocket ws_client;
   if (use_websocket) {
     ws_client.setUrl(url);
     ws_client.enableAutomaticReconnection();
-    ws_client.setOnMessageCallback([&](const ix::WebSocketMessagePtr &msg) {
-      if (!running) {
-        return;
-      }
-      if (msg->type == ix::WebSocketMessageType::Message) {
-        if (msg->binary) {
-          ResponseData response = {msg->str, brightness.load(), 0};
-          add_to_queue(std::move(response));
-        } else {
-          auto json_message = nlohmann::json::parse(msg->str, nullptr, false);
-          if (json_message.is_discarded()) {
-            std::cerr << "JSON parsing error: Invalid JSON format" << std::endl;
+    ws_client.setOnMessageCallback(
+        [&](const ix::WebSocketMessagePtr &msg) {
+          if (!running) {
             return;
           }
+          if (msg->type == ix::WebSocketMessageType::Message) {
+            if (msg->binary) {
+              ResponseData response = {msg->str, brightness.load(),
+                                       next_dwell_secs.load(),
+                                       next_immediate.load()};
+              add_to_queue(std::move(response));
+              next_immediate.store(false);
+            } else {
+              auto json_message =
+                  nlohmann::json::parse(msg->str, nullptr, false);
+              if (json_message.is_discarded()) {
+                std::cerr << "JSON parsing error: Invalid JSON format"
+                          << std::endl;
+                return;
+              }
 
-          // std::cout << "Received JSON message: " << json_message.dump() <<
-          // std::endl;
-
-          if (json_message.contains("brightness") &&
-              json_message["brightness"].is_number_integer()) {
-            int new_brightness = json_message["brightness"].get<int>();
-            if (new_brightness < 0 || new_brightness > 100) {
-              std::cerr << "Invalid brightness value: " << new_brightness
-                        << std::endl;
-              return;
+              if (json_message.contains("brightness") &&
+                  json_message["brightness"].is_number_integer()) {
+                int new_brightness = json_message["brightness"].get<int>();
+                if (new_brightness < 0 || new_brightness > 100) {
+                  std::cerr << "Invalid brightness value: " << new_brightness
+                            << std::endl;
+                  return;
+                }
+                brightness.store(new_brightness);
+              } else if (json_message.contains("dwell_secs") &&
+                         json_message["dwell_secs"].is_number_integer()) {
+                next_dwell_secs.store(
+                    json_message["dwell_secs"].get<int>());
+              } else if (json_message.contains("immediate") &&
+                         json_message["immediate"].is_boolean()) {
+                next_immediate.store(
+                    json_message["immediate"].get<bool>());
+              } else if (json_message.contains("status") &&
+                         json_message["status"].is_string() &&
+                         json_message.contains("message") &&
+                         json_message["message"].is_string()) {
+                std::cerr << json_message["status"].get<std::string>() << ": "
+                          << json_message["message"].get<std::string>()
+                          << std::endl;
+              } else {
+                std::cerr << "Invalid JSON message format: " << msg->str
+                          << std::endl;
+              }
             }
-            brightness.store(new_brightness);
-          } else if (json_message.contains("status") &&
-                     json_message["status"].is_string() &&
-                     json_message.contains("message") &&
-                     json_message["message"].is_string()) {
-            std::cerr << json_message["status"].get<std::string>() << ": "
-                      << json_message["message"].get<std::string>()
+          } else if (msg->type == ix::WebSocketMessageType::Error) {
+            std::cerr << "WebSocket error: " << msg->errorInfo.reason
                       << std::endl;
-          } else {
-            std::cerr << "Invalid JSON message format" << std::endl;
+          } else if (msg->type == ix::WebSocketMessageType::Close) {
+            std::cerr << "WebSocket closed: " << msg->closeInfo.reason
+                      << std::endl;
           }
-        }
-      } else if (msg->type == ix::WebSocketMessageType::Error) {
-        std::cerr << "WebSocket error: " << msg->errorInfo.reason << std::endl;
-      } else if (msg->type == ix::WebSocketMessageType::Close) {
-        std::cerr << "WebSocket closed: " << msg->closeInfo.reason << std::endl;
-      }
-    });
+        });
     ws_client.start();
   } else {
     // Find the start of the path after the scheme
@@ -309,6 +338,12 @@ int main(int argc, char *argv[]) {
       response_queue.pop();
     }
     queue_not_full.notify_one();
+
+    if (use_websocket) {
+      nlohmann::json displaying_msg;
+      displaying_msg["displaying"] = ws_message_counter.load();
+      ws_client.send(displaying_msg.dump());
+    }
 
     static int previous_brightness = -1;
     if (response.brightness != -1 &&
