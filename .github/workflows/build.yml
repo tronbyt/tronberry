@@ -24,8 +24,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: tronberry
-        path: |
-          tronberry
+        path: tronberry
   release:
     name: Create Release
     runs-on: ubuntu-latest
@@ -49,4 +48,4 @@ jobs:
               --repo="${GITHUB_REPOSITORY}" \
               --title="${GITHUB_REPOSITORY#*/} ${tag#v}" \
               --generate-notes \
-              build/tronberry/*
+              build/*
