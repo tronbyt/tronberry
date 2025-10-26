@@ -1,13 +1,14 @@
 # Stage 1: The cross-compilation environment
-FROM ubuntu:24.04 AS builder
+FROM debian:trixie AS builder
 
-# Install dependencies for aarch64 cross-compilation, inspired by the project's CI setup.
+# Install dependencies for aarch64 cross-compilation
 RUN dpkg --add-architecture arm64 && \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     git \
     make \
-    crossbuild-essential-arm64 \
+    binutils \
+    g++-aarch64-linux-gnu \
     libwebp-dev:arm64 \
     libssl-dev:arm64 \
     zlib1g-dev:arm64 \
@@ -22,19 +23,14 @@ WORKDIR /usr/src/app
 # Copy the entire project context
 COPY . .
 
-# Initialize submodules
-RUN git submodule update --init --recursive
-
-# Build the project using the cross-compiler.
-# Explicitly pass the cross-compiler variables and override CFLAGS to ensure the correct architecture is targeted.
-RUN make \
+# Initialize submodules, build, and strip the binary
+RUN git submodule update --init --recursive && \
+    make \
     CXX=${CROSS_COMPILE}g++ \
     CC=${CROSS_COMPILE}gcc \
     AR=${CROSS_COMPILE}ar \
-    CFLAGS="-W -Wall -Wextra -Wno-unused-parameter -O2 -fPIC -march=armv8-a"
-
-# Strip the binary to reduce its size
-RUN ${CROSS_COMPILE}strip tronberry
+    CFLAGS="-W -Wall -Wextra -Wno-unused-parameter -O3 -fPIC -march=armv8-a" && \
+    ${CROSS_COMPILE}strip tronberry
 
 # Stage 2: Create a minimal final image with only the binary
 FROM scratch
