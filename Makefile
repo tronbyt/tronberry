@@ -3,7 +3,8 @@ INCLUDES := -I/usr/local/include -I/opt/homebrew/include -Ilibs
 LIBPATHS := -L/usr/local/lib -L/opt/homebrew/lib
 LDFLAGS := $(LIBPATHS) -lwebp -lwebpdemux -lssl -lcrypto
 CFLAGS=-W -Wall -Wextra -Wno-unused-parameter -O3 -fPIC -march=native
-CXXFLAGS :=$(CFLAGS) -fno-exceptions -std=c++23
+FIRMWARE_VERSION ?= dev
+CXXFLAGS :=$(CFLAGS) -fno-exceptions -std=c++23 -DFIRMWARE_VERSION='"$(FIRMWARE_VERSION)"'
 TARGET := tronberry
 SRCS := main.cc startup.cc
 RGB_LIB_DISTRIBUTION=libs/rpi-rgb-led-matrix

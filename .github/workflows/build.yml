@@ -19,7 +19,16 @@ jobs:
     - name: Install dependencies
       run: sudo ./.github/scripts/setup-linux.sh
     - name: Build
-      run: make
+      run: |
+        VERSION=""
+        if [[ $GITHUB_REF == refs/tags/v* ]]; then
+          VERSION=${GITHUB_REF#refs/tags/v}
+        fi
+        if [ -n "$VERSION" ]; then
+          make FIRMWARE_VERSION="$VERSION"
+        else
+          make
+        fi
     - name: Archive artifacts
       uses: actions/upload-artifact@v5
       with:
