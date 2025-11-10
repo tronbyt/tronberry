@@ -3,6 +3,8 @@
 
 #include <chrono>
 #include <deque>
+#include <fstream>
+#include <format>
 #include <iostream>
 #include <queue>
 #include <string>
@@ -14,6 +16,13 @@
 #include "led-matrix.h"
 #include "startup.h"
 
+#ifndef FIRMWARE_VERSION
+#define FIRMWARE_VERSION "dev"
+#endif
+
+#define FIRMWARE_TYPE "Tronberry"
+#define PROTOCOL_VERSION 1
+
 using namespace rgb_matrix;
 
 static std::atomic<bool> running(true);
@@ -21,6 +30,24 @@ static std::atomic<int> brightness(INITIAL_BRIGHTNESS);
 static bool verbose = false;
 static std::condition_variable queue_not_full;
 static std::condition_variable queue_not_empty;
+
+static std::string get_mac_address() {
+  for (const char *iface_name : {"eth0", "wlan0"}) {
+    std::ifstream iface(std::format("/sys/class/net/{}/address", iface_name));
+    if (iface.is_open()) {
+      std::string mac;
+      if (std::getline(iface, mac)) {
+        // Trim whitespace from end
+        size_t endpos = mac.find_last_not_of(" \t\n\r");
+        if (std::string::npos != endpos) {
+          mac = mac.substr(0, endpos + 1);
+        }
+        return mac;
+      }
+    }
+  }
+  return "xx:xx:xx:xx:xx:xx";  // fallback
+}
 
 static void Log(const std::string &message) {
   if (!verbose) {
@@ -245,7 +272,19 @@ int main(int argc, char *argv[]) {
           if (!running) {
             return;
           }
-          if (msg->type == ix::WebSocketMessageType::Message) {
+          if (msg->type == ix::WebSocketMessageType::Open) {
+            Log("WebSocket connection established");
+            const nlohmann::json client_info_msg = {
+                {"client_info", {
+                    {"firmware_version", FIRMWARE_VERSION},
+                    {"firmware_type", FIRMWARE_TYPE},
+                    {"protocol_version", PROTOCOL_VERSION},
+                    {"mac", get_mac_address()}
+                }}
+            };
+            Log("Sending client info: " + client_info_msg.dump());
+            ws_client.send(client_info_msg.dump());
+          } else if (msg->type == ix::WebSocketMessageType::Message) {
             if (msg->binary) {
               Log("Received image of size " +
                   std::to_string(msg->str.size()) + " bytes");
