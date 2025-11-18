@@ -24,6 +24,12 @@ In order to avoid flickering, follow these steps (taken from https://github.com/
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/tronbyt/tronberry/HEAD/install.sh)"
     ```
 
+## Configuration
+
+The installer asks for additional command line flags which can be used to match the connected LED matrix display. The documentation at https://github.com/hzeller/rpi-rgb-led-matrix documents the available flags.
+
+If you missed this during the initial installation, you can either run the installer again or add the flags to the `ExecStart` parameter in `/etc/systemd/system/tronberry.service`.
+
 ## Upgrading
 
 To upgrade to a new version, just run the install script again:
