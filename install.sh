@@ -2,7 +2,7 @@
 set -e
 
 # Parse optional username argument
-TARGET_USER=${1:-pi}
+TARGET_USER=${1:-$(whoami)}
 HOME_DIR=$(eval echo "~$TARGET_USER")
 INSTALL_DIR="$HOME_DIR/tronberry"
 
