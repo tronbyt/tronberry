@@ -12,16 +12,21 @@ In order to avoid flickering, follow these steps (taken from https://github.com/
 - Set `dtoverlay=disable-bt` in `/boot/firmware/config.txt` (disables bluetooth)
 - Add `isolcpus=3` at the end of `/boot/firmware/cmdline.txt`
 - Run
-
-```
-cat <<EOF | sudo tee /etc/modprobe.d/blacklist-rgb-matrix.conf
-blacklist snd_bcm2835
-EOF
-sudo update-initramfs -u
-```
+    ```
+    cat <<EOF | sudo tee /etc/modprobe.d/blacklist-rgb-matrix.conf
+    blacklist snd_bcm2835
+    EOF
+    sudo update-initramfs -u
+    ```
 - Reboot
+- Run the installation script and follow the instructions
+    ```
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/tronbyt/tronberry/HEAD/install.sh)"
+    ```
 
-Now download either the latest binary release from https://github.com/tronbyt/tronberry/releases onto your Pi or build the Tronbyt client yourself on the device:
+## Building instructions
+
+If you want to build the Tronbyt client yourself on the device:
 
 ```sh
 # Install dependencies
@@ -36,7 +41,7 @@ cd tronberry
 make
 ```
 
-Compilation on the device is slow, so you may consider cross-compiling the binary on
+Compilation on the device is slow and might run out of memory, so you may consider cross-compiling the binary on
 a more powerful machine using `docker build -f Dockerfile.cross --output . .`.
 
 ## Running

@@ -24,8 +24,10 @@ WORKDIR /usr/src/app
 COPY . .
 
 # Initialize submodules, build, and strip the binary
+ARG FIRMWARE_VERSION=dev
 RUN git submodule update --init --recursive && \
     make \
+    FIRMWARE_VERSION=${FIRMWARE_VERSION} \
     CXX=${CROSS_COMPILE}g++ \
     CC=${CROSS_COMPILE}gcc \
     AR=${CROSS_COMPILE}ar \

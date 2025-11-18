@@ -9,26 +9,24 @@ on:
     branches: [ "main" ]
 jobs:
   build:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
     - uses: actions/checkout@v5
       with:
         submodules: true
-    - name: Install dependencies
-      run: sudo ./.github/scripts/setup-linux.sh
-    - name: Build
+    - name: Build with Docker Cross-Compilation
       run: |
         VERSION=""
         if [[ $GITHUB_REF == refs/tags/v* ]]; then
           VERSION=${GITHUB_REF#refs/tags/v}
         fi
+        DOCKER_BUILD_ARGS=""
         if [ -n "$VERSION" ]; then
-          make FIRMWARE_VERSION="$VERSION"
-        else
-          make
+          DOCKER_BUILD_ARGS="--build-arg FIRMWARE_VERSION=$VERSION"
         fi
+        docker build -f Dockerfile.cross --output . . $DOCKER_BUILD_ARGS
     - name: Archive artifacts
       uses: actions/upload-artifact@v5
       with:

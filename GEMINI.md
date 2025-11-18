@@ -82,5 +82,5 @@ The application requires `sudo` to access the Raspberry Pi's GPIO hardware. Addi
 
 ### Continuous Integration
 
--   The GitHub Actions workflow in `.github/workflows/build.yml` automatically builds the project on a `ubuntu-24.04-arm` runner for every push and pull request to the `main` branch.
--   When a new tag is pushed, it creates a GitHub Release and attaches the compiled binary as an artifact.
+-   The GitHub Actions workflow in `.github/workflows/build.yml` automatically builds the project using Docker-based cross-compilation on an `ubuntu-latest` runner for every push and pull request to the `main` branch.
+-   When a new tag is pushed, the version from the tag is passed to the build and compiled into the binary. The workflow then creates a GitHub Release and attaches the compiled, stripped binary as an artifact.
