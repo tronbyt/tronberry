@@ -17,6 +17,12 @@ echo "Installing Tronberry..."
 if [ ! -d "$INSTALL_DIR" ]; then
   mkdir -p "$INSTALL_DIR"
 fi
+
+if systemctl is-active --quiet tronberry; then
+  echo "Stopping existing tronberry service..."
+  sudo systemctl stop tronberry
+fi
+
 echo "Downloading latest release from GitHub..."
 LATEST_URL=$(curl -s https://api.github.com/repos/tronbyt/tronberry/releases/latest | jq -r '.assets[] | select(.name == "tronberry") | .browser_download_url')
 if [ -z "$LATEST_URL" ]; then

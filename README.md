@@ -12,7 +12,7 @@ In order to avoid flickering, follow these steps (taken from https://github.com/
 - Set `dtoverlay=disable-bt` in `/boot/firmware/config.txt` (disables bluetooth)
 - Add `isolcpus=3` at the end of `/boot/firmware/cmdline.txt`
 - Run
-    ```
+    ```sh
     cat <<EOF | sudo tee /etc/modprobe.d/blacklist-rgb-matrix.conf
     blacklist snd_bcm2835
     EOF
@@ -20,9 +20,17 @@ In order to avoid flickering, follow these steps (taken from https://github.com/
     ```
 - Reboot
 - Run the installation script and follow the instructions
-    ```
+    ```sh
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/tronbyt/tronberry/HEAD/install.sh)"
     ```
+
+## Upgrading
+
+To upgrade to a new version, just run the install script again:
+
+```sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/tronbyt/tronberry/HEAD/install.sh)"
+```
 
 ## Building instructions
 
@@ -46,36 +54,13 @@ a more powerful machine using `docker build -f Dockerfile.cross --output . .`.
 
 ## Running
 
+For normal operations, the service should be run as a systemd service using `sudo systemctl enable`.
+
+For testing, you can also run it manually (as root):
+
 ```sh
 # The Tronbyt URL looks like http(s)://…/next or ws(s)://…/ws
 sudo ./tronberry ${TRONBYT_URL}
 ```
 
 If you use `tronberry` with the original Tidbyt display, add the `--led-panel-type=FM6126A` flag. For a list of available options, run `./tronberry --help`, there are many knobs to tweak.
-
-To start `tronberry` at startup, create `/etc/systemd/system/tronberry.service` with the following content:
-
-```ini
-[Unit]
-Description=Tronberry
-After=network-online.target
-
-[Service]
-ExecStart=<ABSOLUTE_PATH_TO_TRONBERRY> <TRONBYT_URL>
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Then run `sudo systemctl enable tronberry` to enable the new service.
-
-To start it manually, run `sudo systemctl start tronberry`.
-
-You may want to configure your Pi to automatically reconnect to the WiFi in case the
-connection is interrupted, so that it'll display fresh images as soon as the WiFi
-becomes available again:
-
-```
-sudo nmcli connection modify "{YOUR_WIFI_SSID}" connection.autoconnect-retries 0
-```
