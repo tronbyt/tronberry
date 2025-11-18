@@ -18,14 +18,11 @@ jobs:
         submodules: true
     - name: Build with Docker Cross-Compilation
       run: |
-        VERSION=""
+        VERSION="${GITHUB_SHA::8}" # Use short commit hash as default version
         if [[ $GITHUB_REF == refs/tags/v* ]]; then
           VERSION=${GITHUB_REF#refs/tags/v}
         fi
-        DOCKER_BUILD_ARGS=""
-        if [ -n "$VERSION" ]; then
-          DOCKER_BUILD_ARGS="--build-arg FIRMWARE_VERSION=$VERSION"
-        fi
+        DOCKER_BUILD_ARGS="--build-arg FIRMWARE_VERSION=$VERSION"
         docker build -f Dockerfile.cross --output . . $DOCKER_BUILD_ARGS
     - name: Archive artifacts
       uses: actions/upload-artifact@v5
