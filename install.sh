@@ -1,6 +1,80 @@
 #!/bin/bash
 set -e
 
+# Function to apply flicker fixes
+apply_flicker_fixes() {
+  echo "Checking for Raspberry Pi optimizations to prevent LED matrix flickering..."
+
+  CONFIG_TXT="/boot/firmware/config.txt"
+  CMDLINE_TXT="/boot/firmware/cmdline.txt"
+  BLACKLIST_FILE="/etc/modprobe.d/blacklist-rgb-matrix.conf"
+
+  # Check if we are on a Pi by checking for config.txt
+  if [ ! -f "$CONFIG_TXT" ]; then
+    echo "Warning: Could not find $CONFIG_TXT. Skipping flicker fixes."
+    echo "This is expected if you are not running on a Raspberry Pi."
+    return
+  fi
+
+  MODIFICATIONS_NEEDED=false
+  if ! grep -q "^dtparam=audio=off$" "$CONFIG_TXT" 2>/dev/null || \
+     ! grep -q "^dtoverlay=disable-bt$" "$CONFIG_TXT" 2>/dev/null || \
+     ! grep -q "\bisolcpus=3\b" "$CMDLINE_TXT" 2>/dev/null || \
+     ! grep -q "^blacklist snd_bcm2835$" "$BLACKLIST_FILE" 2>/dev/null; then
+    MODIFICATIONS_NEEDED=true
+  fi
+
+  if [ "$MODIFICATIONS_NEEDED" = false ]; then
+    echo "Optimizations to prevent flickering are already applied."
+    return
+  fi
+
+  read -r -p "Apply Raspberry Pi optimizations to prevent LED matrix flickering? This will disable audio and Bluetooth, modify system files, and requires a reboot. [Y/n] " response
+  if [[ "$response" =~ ^([nN][oO]?)$ ]]; then
+    echo "Skipping optimizations."
+    return
+  fi
+
+  echo "Applying optimizations..."
+  NEEDS_REBOOT=false
+
+  if ! grep -q "^dtparam=audio=off$" "$CONFIG_TXT" 2>/dev/null; then
+    echo "Disabling audio by adding 'dtparam=audio=off' to $CONFIG_TXT"
+    echo -e "\ndtparam=audio=off" | sudo tee -a "$CONFIG_TXT" > /dev/null
+    NEEDS_REBOOT=true
+  fi
+
+  if ! grep -q "^dtoverlay=disable-bt$" "$CONFIG_TXT" 2>/dev/null; then
+    echo "Disabling Bluetooth by adding 'dtoverlay=disable-bt' to $CONFIG_TXT"
+    echo -e "\ndtoverlay=disable-bt" | sudo tee -a "$CONFIG_TXT" > /dev/null
+    NEEDS_REBOOT=true
+  fi
+
+  if ! grep -q "\bisolcpus=3\b" "$CMDLINE_TXT" 2>/dev/null; then
+    echo "Isolating CPU core 3 by adding 'isolcpus=3' to $CMDLINE_TXT"
+    CMDLINE_CONTENT=$(sudo cat "$CMDLINE_TXT")
+    echo "$CMDLINE_CONTENT isolcpus=3" | sudo tee "$CMDLINE_TXT" > /dev/null
+    NEEDS_REBOOT=true
+  fi
+
+  if ! grep -q "^blacklist snd_bcm2835$" "$BLACKLIST_FILE" 2>/dev/null; then
+      echo "Blacklisting snd_bcm2835 module..."
+      echo "blacklist snd_bcm2835" | sudo tee "$BLACKLIST_FILE" > /dev/null
+      echo "Updating initramfs..."
+      sudo update-initramfs -u
+      NEEDS_REBOOT=true
+  fi
+
+  if [ "$NEEDS_REBOOT" = true ]; then
+    # This variable will be used outside the function
+    export FLICKER_FIX_APPLIED=true
+  fi
+}
+
+# Apply optimizations
+apply_flicker_fixes
+
+
 # Parse optional username argument
 TARGET_USER=${1:-$(whoami)}
 HOME_DIR=$(eval echo "~$TARGET_USER")
@@ -81,6 +155,15 @@ if [ -n "$WIFI_SSID" ]; then
   sudo nmcli connection modify "$WIFI_SSID" connection.autoconnect-retries 0
 else
   echo "No SSID entered. Skipping Wi-Fi autoconnect tweak."
+fi
+
+# Prompt for reboot if needed
+if [ "$FLICKER_FIX_APPLIED" = true ]; then
+  read -r -p "The system needs to be rebooted for the anti-flickering settings to take effect. Reboot now? [Y/n] " response
+  if [[ ! "$response" =~ ^([nN][oO]?)$ ]]; then
+    echo "Rebooting..."
+    sudo reboot
+  fi
 fi
 
 echo "///////////////////////////////////////////////////////////////////////////////"

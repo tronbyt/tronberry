@@ -6,23 +6,11 @@ It has only been tested with a Raspberry Pi Zero 2W, but should work with all de
 
 ## Installation
 
-In order to avoid flickering, follow these steps (taken from https://github.com/hzeller/rpi-rgb-led-matrix?tab=readme-ov-file#troubleshooting):
+Run the installation script and follow the instructions. The script will ask whether you want to apply optimizations to prevent LED matrix flickering. Note that this will disable audio and Bluetooth and requires a reboot.
 
-- Set `dtparam=audio=off` in `/boot/firmware/config.txt` (disables audio)
-- Set `dtoverlay=disable-bt` in `/boot/firmware/config.txt` (disables bluetooth)
-- Add `isolcpus=3` at the end of `/boot/firmware/cmdline.txt`
-- Run
-    ```sh
-    cat <<EOF | sudo tee /etc/modprobe.d/blacklist-rgb-matrix.conf
-    blacklist snd_bcm2835
-    EOF
-    sudo update-initramfs -u
-    ```
-- Reboot
-- Run the installation script and follow the instructions
-    ```sh
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/tronbyt/tronberry/HEAD/install.sh)"
-    ```
+```sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/tronbyt/tronberry/HEAD/install.sh)"
+```
 
 ## Configuration
 
