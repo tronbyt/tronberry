@@ -81,5 +81,6 @@
         "ios": "cpp",
         "locale": "cpp",
         "print": "cpp"
-    }
+    },
+    "cmake.sourceDirectory": "/Users/ingmar/Developer/tronberry/libs/IXWebSocket"
 }

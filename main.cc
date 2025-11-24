@@ -27,6 +27,7 @@ using namespace rgb_matrix;
 
 static std::atomic<bool> running(true);
 static std::atomic<int> brightness(INITIAL_BRIGHTNESS);
+static std::atomic<bool> redraw_frame(false);
 static bool verbose = false;
 static std::condition_variable queue_not_full;
 static std::condition_variable queue_not_empty;
@@ -96,6 +97,28 @@ static void DisplayImage(RGBMatrix *matrix, FrameCanvas *&canvas,
       if (stop_display_callback()) {
         break;
       }
+
+      if (brightness.load() == 0) {
+        canvas->Clear();
+        matrix->SwapOnVSync(canvas);
+        while (std::chrono::steady_clock::now() - start_time <
+                   std::chrono::seconds(dwell_secs) &&
+               brightness.load() == 0 && running && !stop_display_callback()) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        // Force a redraw with the new brightness.
+        matrix->SetBrightness(brightness.load());
+        DrawFrame(canvas, image_data, width, height);
+        canvas = matrix->SwapOnVSync(canvas);
+        continue;
+      }
+
+      if (redraw_frame.exchange(false)) {
+        Log("Redrawing frame for brightness change");
+        matrix->SetBrightness(brightness.load());
+        DrawFrame(canvas, image_data, width, height);
+        canvas = matrix->SwapOnVSync(canvas);
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
   }
@@ -107,6 +130,7 @@ static void DisplayAnimation(
     const std::function<bool()> &stop_animation_callback) {
   auto start_time = std::chrono::steady_clock::now();
   uint8_t *frame_data;
+  uint8_t *last_frame_data = nullptr;
   int timestamp;
   int prev_timestamp = 0;
   Log("Showing animation for " + std::to_string(dwell_secs) + " seconds");
@@ -117,11 +141,40 @@ static void DisplayAnimation(
       break;
     }
 
+    if (brightness.load() == 0) {
+      canvas->Clear();
+      matrix->SwapOnVSync(canvas);
+      while (std::chrono::steady_clock::now() - start_time <
+                 std::chrono::seconds(dwell_secs) &&
+             brightness.load() == 0 && running && !stop_animation_callback()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+      if (last_frame_data) {
+        matrix->SetBrightness(brightness.load());
+        DrawFrame(canvas, last_frame_data, width, height);
+        canvas = matrix->SwapOnVSync(canvas);
+      }
+      continue;
+    }
+
+    if (redraw_frame.exchange(false)) {
+      if (last_frame_data) {
+        Log("Redrawing animation frame for brightness change");
+        matrix->SetBrightness(brightness.load());
+        DrawFrame(canvas, last_frame_data, width, height);
+        canvas = matrix->SwapOnVSync(canvas);
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      continue;
+    }
+
     if (!WebPAnimDecoderGetNext(anim_decoder, &frame_data, &timestamp)) {
       WebPAnimDecoderReset(anim_decoder);
       prev_timestamp = 0;
+      last_frame_data = nullptr;
       continue;
     }
+    last_frame_data = frame_data;
 
     DrawFrame(canvas, frame_data, width, height);
 
@@ -268,7 +321,7 @@ int main(int argc, char *argv[]) {
     ws_client.setUrl(url);
     ws_client.enableAutomaticReconnection();
     ws_client.setOnMessageCallback(
-        [&](const ix::WebSocketMessagePtr &msg) {
+        [&, matrix, offscreen_canvas](const ix::WebSocketMessagePtr &msg) {
           if (!running) {
             return;
           }
@@ -288,8 +341,7 @@ int main(int argc, char *argv[]) {
             if (msg->binary) {
               Log("Received image of size " +
                   std::to_string(msg->str.size()) + " bytes");
-              ResponseData response = {msg->str, brightness.load(),
-                                       next_dwell_secs.load(), 0};
+              ResponseData response = {msg->str, -1, next_dwell_secs.load(), 0};
               add_to_queue(std::move(response));
             } else {
               auto json_message =
@@ -309,8 +361,14 @@ int main(int argc, char *argv[]) {
                             << std::endl;
                   return;
                 }
-                brightness.store(new_brightness);
-                matrix->SetBrightness(new_brightness);
+                if (new_brightness != brightness.load()) {
+                  Log("Setting brightness to " +
+                      std::to_string(new_brightness));
+                  brightness.store(new_brightness);
+                  if (new_brightness > 0) {
+                    redraw_frame.store(true);
+                  }
+                }
               } else if (json_message.contains("dwell_secs") &&
                          json_message["dwell_secs"].is_number_integer()) {
                 next_dwell_secs.store(
@@ -431,13 +489,16 @@ int main(int argc, char *argv[]) {
       ws_client.send(displaying_msg.dump());
     }
 
-    static int previous_brightness = -1;
     if (response.brightness != -1 &&
-        response.brightness != previous_brightness) {
+        response.brightness != brightness.load()) {
       Log("Setting brightness to " + std::to_string(response.brightness));
-      matrix->SetBrightness(response.brightness);
-      previous_brightness = response.brightness;
+      brightness.store(response.brightness);
+      if (brightness.load() > 0) {
+        redraw_frame.store(true);
+      }
     }
+
+    matrix->SetBrightness(brightness.load());
 
     if (response.data.empty()) {
       continue;
