@@ -134,6 +134,7 @@ WorkingDirectory=$INSTALL_DIR
 StandardOutput=inherit
 StandardError=inherit
 Restart=always
+Nice=-10
 
 [Install]
 WantedBy=multi-user.target
