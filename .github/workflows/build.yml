@@ -25,7 +25,7 @@ jobs:
         DOCKER_BUILD_ARGS="--build-arg FIRMWARE_VERSION=$VERSION"
         docker build -f Dockerfile.cross --output . . $DOCKER_BUILD_ARGS
     - name: Archive artifacts
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v6
       with:
         name: tronberry
         path: tronberry
