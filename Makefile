@@ -1,10 +1,11 @@
 CXX ?= g++
+MARCH ?= native
 INCLUDES := -I/usr/local/include -I/opt/homebrew/include -Ilibs
 LIBPATHS := -L/usr/local/lib -L/opt/homebrew/lib
 LDFLAGS := $(LIBPATHS) -lwebp -lwebpdemux -lssl -lcrypto
-CFLAGS=-W -Wall -Wextra -Wno-unused-parameter -O3 -fPIC -march=native
+CFLAGS=-W -Wall -Wextra -Wno-unused-parameter -O3 -fPIC -march=$(MARCH)
 FIRMWARE_VERSION ?= dev
-CXXFLAGS :=$(CFLAGS) -fno-exceptions -std=c++23 -DFIRMWARE_VERSION='"$(FIRMWARE_VERSION)"'
+CXXFLAGS :=$(CFLAGS) -fno-exceptions -std=c++23 -MMD -MP -DFIRMWARE_VERSION='"$(FIRMWARE_VERSION)"'
 TARGET := tronberry
 SRCS := main.cc startup.cc
 RGB_LIB_DISTRIBUTION=libs/rpi-rgb-led-matrix
@@ -32,6 +33,9 @@ $(RGB_LIBRARY): check-and-reinit-submodules
 	$(MAKE) -C $(RGB_LIBDIR) CFLAGS="$(CFLAGS) -DDEFAULT_HARDWARE='\"regular\"'"
 
 OBJS := $(SRCS:.cc=.o)
+DEPS := $(OBJS:.o=.d)
+
+-include $(DEPS)
 
 $(TARGET): $(OBJS) $(RGB_LIBRARY) $(IXWEBSOCKET_LIBRARY)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $(TARGET) $(OBJS) $(LDFLAGS) $(RGB_LDFLAGS) $(IXWEBSOCKET_LDFLAGS)
@@ -41,6 +45,7 @@ clean: check-and-reinit-submodules
 	$(MAKE) -C $(RGB_LIBDIR) clean
 	find . -name '*.o' -delete
 	find . -name '*.a' -delete
+	find . -name '*.d' -delete
 
 check-and-reinit-submodules:
 	@if git submodule status | egrep -q '^[-+]' ; then \
