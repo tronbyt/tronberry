@@ -6,6 +6,8 @@
 #include <fstream>
 #include <format>
 #include <iostream>
+#include <memory>
+#include <optional>
 #include <queue>
 #include <string>
 #include <thread>
@@ -23,14 +25,22 @@
 #define FIRMWARE_TYPE "Tronberry"
 #define PROTOCOL_VERSION 1
 
-using namespace rgb_matrix;
+using rgb_matrix::CreateMatrixFromOptions;
+using rgb_matrix::FrameCanvas;
+using rgb_matrix::PrintMatrixFlags;
+using rgb_matrix::RGBMatrix;
+using rgb_matrix::RuntimeOptions;
 
-static std::atomic<bool> running(true);
-static std::atomic<int> brightness(INITIAL_BRIGHTNESS);
-static std::atomic<bool> redraw_frame(false);
-static bool verbose = false;
-static std::condition_variable queue_not_full;
-static std::condition_variable queue_not_empty;
+struct AppState {
+  std::atomic<bool> running{true};
+  std::atomic<int> brightness{INITIAL_BRIGHTNESS};
+  std::atomic<bool> redraw_frame{false};
+  bool verbose = false;
+  std::condition_variable queue_not_full;
+  std::condition_variable queue_not_empty;
+};
+
+static AppState *g_app_state = nullptr;
 
 static std::string get_mac_address() {
   for (const char *iface_name : {"eth0", "wlan0"}) {
@@ -50,8 +60,8 @@ static std::string get_mac_address() {
   return "xx:xx:xx:xx:xx:xx";  // fallback
 }
 
-static void Log(const std::string &message) {
-  if (!verbose) {
+static void Log(const AppState &state, const std::string &message) {
+  if (!state.verbose) {
     return;
   }
   auto now = std::chrono::system_clock::now();
@@ -63,15 +73,23 @@ static void Log(const std::string &message) {
 }
 
 static void InterruptHandler(int) {
-  running = false;
-  queue_not_empty.notify_all();
-  queue_not_full.notify_all();
+  // Only the atomic store is strictly signal-safe. The notify_all calls on
+  // condition variables are technically undefined behavior in a signal handler,
+  // but are needed to unblock waiting threads for shutdown. In practice this
+  // works reliably on Linux/glibc.
+  if (g_app_state) {
+    g_app_state->running = false;
+    g_app_state->queue_not_empty.notify_all();
+    g_app_state->queue_not_full.notify_all();
+  }
 }
 
 static void DrawFrame(FrameCanvas *canvas, const uint8_t *frame_data, int width,
                       int height) {
-  for (int y = 0; y < height; ++y) {
-    for (int x = 0; x < width; ++x) {
+  int max_x = std::min(width, canvas->width());
+  int max_y = std::min(height, canvas->height());
+  for (int y = 0; y < max_y; ++y) {
+    for (int x = 0; x < max_x; ++x) {
       int index = (y * width + x) * 4;  // RGBA
       canvas->SetPixel(x, y, frame_data[index], frame_data[index + 1],
                        frame_data[index + 2]);
@@ -79,15 +97,52 @@ static void DrawFrame(FrameCanvas *canvas, const uint8_t *frame_data, int width,
   }
 }
 
-static void DisplayImage(RGBMatrix *matrix, FrameCanvas *&canvas,
-                         const uint8_t *image_data, int width, int height,
-                         int dwell_secs,
+// Shared helper: waits while brightness is zero, then redraws the frame.
+// Returns true if the display should stop (shutdown or callback).
+static bool WaitWhileDark(
+    AppState &state, RGBMatrix *matrix, FrameCanvas *&canvas,
+    const uint8_t *frame_data, int width, int height,
+    const std::chrono::steady_clock::time_point &start_time, int dwell_secs,
+    const std::function<bool()> &stop_callback) {
+  canvas->Clear();
+  matrix->SwapOnVSync(canvas);
+  while (std::chrono::steady_clock::now() - start_time <
+             std::chrono::seconds(dwell_secs) &&
+         state.brightness.load() == 0 && state.running && !stop_callback()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  if (!state.running || stop_callback()) {
+    return true;
+  }
+  matrix->SetBrightness(state.brightness.load());
+  DrawFrame(canvas, frame_data, width, height);
+  canvas = matrix->SwapOnVSync(canvas);
+  return false;
+}
+
+// Shared helper: checks for brightness change and redraws if needed.
+static void HandleBrightnessRedraw(AppState &state, RGBMatrix *matrix,
+                                   FrameCanvas *&canvas,
+                                   const uint8_t *frame_data, int width,
+                                   int height) {
+  if (state.redraw_frame.exchange(false)) {
+    Log(state, "Redrawing frame for brightness change");
+    matrix->SetBrightness(state.brightness.load());
+    DrawFrame(canvas, frame_data, width, height);
+    canvas = matrix->SwapOnVSync(canvas);
+  }
+}
+
+static void DisplayImage(AppState &state, RGBMatrix *matrix,
+                         FrameCanvas *&canvas, const uint8_t *image_data,
+                         int width, int height, int dwell_secs,
                          const std::function<bool()> &stop_display_callback) {
   DrawFrame(canvas, image_data, width, height);
 
   canvas = matrix->SwapOnVSync(canvas);
-  Log("Showing still image for " + std::to_string(dwell_secs) + " seconds");
-  if (!running) {
+  Log(state,
+      "Showing still image for " + std::to_string(dwell_secs) + " seconds");
+  if (!state.running) {
     return;
   }
   if (dwell_secs > 0) {
@@ -98,42 +153,31 @@ static void DisplayImage(RGBMatrix *matrix, FrameCanvas *&canvas,
         break;
       }
 
-      if (brightness.load() == 0) {
-        canvas->Clear();
-        matrix->SwapOnVSync(canvas);
-        while (std::chrono::steady_clock::now() - start_time <
-                   std::chrono::seconds(dwell_secs) &&
-               brightness.load() == 0 && running && !stop_display_callback()) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      if (state.brightness.load() == 0) {
+        if (WaitWhileDark(state, matrix, canvas, image_data, width, height,
+                          start_time, dwell_secs, stop_display_callback)) {
+          break;
         }
-        // Force a redraw with the new brightness.
-        matrix->SetBrightness(brightness.load());
-        DrawFrame(canvas, image_data, width, height);
-        canvas = matrix->SwapOnVSync(canvas);
         continue;
       }
 
-      if (redraw_frame.exchange(false)) {
-        Log("Redrawing frame for brightness change");
-        matrix->SetBrightness(brightness.load());
-        DrawFrame(canvas, image_data, width, height);
-        canvas = matrix->SwapOnVSync(canvas);
-      }
+      HandleBrightnessRedraw(state, matrix, canvas, image_data, width, height);
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
   }
 }
 
 static void DisplayAnimation(
-    RGBMatrix *matrix, FrameCanvas *&canvas, WebPAnimDecoder *anim_decoder,
-    int width, int height, int dwell_secs,
+    AppState &state, RGBMatrix *matrix, FrameCanvas *&canvas,
+    WebPAnimDecoder *anim_decoder, int width, int height, int dwell_secs,
     const std::function<bool()> &stop_animation_callback) {
   auto start_time = std::chrono::steady_clock::now();
   uint8_t *frame_data;
   uint8_t *last_frame_data = nullptr;
   int timestamp;
   int prev_timestamp = 0;
-  Log("Showing animation for " + std::to_string(dwell_secs) + " seconds");
+  Log(state,
+      "Showing animation for " + std::to_string(dwell_secs) + " seconds");
 
   while (!dwell_secs || (std::chrono::steady_clock::now() - start_time <
                          std::chrono::seconds(dwell_secs))) {
@@ -141,31 +185,32 @@ static void DisplayAnimation(
       break;
     }
 
-    if (brightness.load() == 0) {
-      canvas->Clear();
-      matrix->SwapOnVSync(canvas);
-      while (std::chrono::steady_clock::now() - start_time <
-                 std::chrono::seconds(dwell_secs) &&
-             brightness.load() == 0 && running && !stop_animation_callback()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      }
+    if (state.brightness.load() == 0) {
       if (last_frame_data) {
-        matrix->SetBrightness(brightness.load());
-        DrawFrame(canvas, last_frame_data, width, height);
-        canvas = matrix->SwapOnVSync(canvas);
+        if (WaitWhileDark(state, matrix, canvas, last_frame_data, width, height,
+                          start_time, dwell_secs, stop_animation_callback)) {
+          break;
+        }
+      } else {
+        canvas->Clear();
+        matrix->SwapOnVSync(canvas);
+        while (std::chrono::steady_clock::now() - start_time <
+                   std::chrono::seconds(dwell_secs) &&
+               state.brightness.load() == 0 && state.running &&
+               !stop_animation_callback()) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
       }
       continue;
     }
 
-    if (redraw_frame.exchange(false)) {
-      if (last_frame_data) {
-        Log("Redrawing animation frame for brightness change");
-        matrix->SetBrightness(brightness.load());
-        DrawFrame(canvas, last_frame_data, width, height);
-        canvas = matrix->SwapOnVSync(canvas);
+    if (last_frame_data) {
+      HandleBrightnessRedraw(state, matrix, canvas, last_frame_data, width,
+                             height);
+      if (state.redraw_frame.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        continue;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      continue;
     }
 
     if (!WebPAnimDecoderGetNext(anim_decoder, &frame_data, &timestamp)) {
@@ -180,7 +225,7 @@ static void DisplayAnimation(
 
     canvas = matrix->SwapOnVSync(canvas);
 
-    if (!running) {
+    if (!state.running) {
       break;
     }
 
@@ -190,7 +235,7 @@ static void DisplayAnimation(
     }
     prev_timestamp = timestamp;
 
-    if (!running) {
+    if (!state.running) {
       break;
     }
   }
@@ -209,6 +254,9 @@ static int usage(const char *progname, const char *msg = NULL) {
 }
 
 int main(int argc, char *argv[]) {
+  AppState state;
+  g_app_state = &state;
+
   RGBMatrix::Options matrix_options;
   matrix_options.rows = 32;
   matrix_options.cols = 64;
@@ -224,7 +272,7 @@ int main(int argc, char *argv[]) {
   std::vector<char *> new_argv(argv, argv + argc);
   for (auto it = new_argv.begin() + 1; it != new_argv.end();) {
     if (strcmp(*it, "--verbose") == 0) {
-      verbose = true;
+      state.verbose = true;
       it = new_argv.erase(it);
     } else {
       ++it;
@@ -233,7 +281,8 @@ int main(int argc, char *argv[]) {
   argc = new_argv.size();
   argv = new_argv.data();
 
-  if (!ParseOptionsFromFlags(&argc, &argv, &matrix_options, &runtime_options)) {
+  if (!rgb_matrix::ParseOptionsFromFlags(&argc, &argv, &matrix_options,
+                                         &runtime_options)) {
     return usage(argv[0]);
   }
 
@@ -295,14 +344,14 @@ int main(int argc, char *argv[]) {
   response_queue.push_back(std::move(startup_response));
 
   std::thread fetch_thread;
-  ix::WebSocket ws_client;
+  std::optional<ix::WebSocket> ws_client;
 
   auto add_to_queue = [&](ResponseData response) {
     std::unique_lock<std::mutex> lock(queue_mutex);
-    queue_not_full.wait(lock, [&]() {
-      return response_queue.size() < max_queue_size || !running;
+    state.queue_not_full.wait(lock, [&]() {
+      return response_queue.size() < max_queue_size || !state.running;
     });
-    if (!running) {
+    if (!state.running) {
       return;
     }
     if (use_websocket) {
@@ -310,38 +359,38 @@ int main(int argc, char *argv[]) {
       response.counter = ws_message_counter.load();
       nlohmann::json queued_msg;
       queued_msg["queued"] = response.counter;
-      Log("Queued message: " + queued_msg.dump());
-      ws_client.send(queued_msg.dump());
+      Log(state, "Queued message: " + queued_msg.dump());
+      ws_client->send(queued_msg.dump());
     }
     response_queue.push_back(std::move(response));
-    queue_not_empty.notify_one();
+    state.queue_not_empty.notify_one();
   };
 
   if (use_websocket) {
-    ws_client.setUrl(url);
-    ws_client.enableAutomaticReconnection();
-    ws_client.setOnMessageCallback(
+    ws_client.emplace();
+    ws_client->setUrl(url);
+    ws_client->enableAutomaticReconnection();
+    ws_client->setOnMessageCallback(
         [&, matrix, offscreen_canvas](const ix::WebSocketMessagePtr &msg) {
-          if (!running) {
+          if (!state.running) {
             return;
           }
           if (msg->type == ix::WebSocketMessageType::Open) {
-            Log("WebSocket connection established");
+            Log(state, "WebSocket connection established");
             const nlohmann::json client_info_msg = {
-                {"client_info", {
-                    {"firmware_version", FIRMWARE_VERSION},
-                    {"firmware_type", FIRMWARE_TYPE},
-                    {"protocol_version", PROTOCOL_VERSION},
-                    {"mac", get_mac_address()}
-                }}
-            };
-            Log("Sending client info: " + client_info_msg.dump());
-            ws_client.send(client_info_msg.dump());
+                {"client_info",
+                 {{"firmware_version", FIRMWARE_VERSION},
+                  {"firmware_type", FIRMWARE_TYPE},
+                  {"protocol_version", PROTOCOL_VERSION},
+                  {"mac", get_mac_address()}}}};
+            Log(state, "Sending client info: " + client_info_msg.dump());
+            ws_client->send(client_info_msg.dump());
           } else if (msg->type == ix::WebSocketMessageType::Message) {
             if (msg->binary) {
-              Log("Received image of size " +
-                  std::to_string(msg->str.size()) + " bytes");
-              ResponseData response = {msg->str, -1, next_dwell_secs.load(), 0};
+              Log(state, "Received image of size " +
+                             std::to_string(msg->str.size()) + " bytes");
+              ResponseData response = {
+                  msg->str, -1, next_dwell_secs.load(), 0};
               add_to_queue(std::move(response));
             } else {
               auto json_message =
@@ -351,7 +400,7 @@ int main(int argc, char *argv[]) {
                           << std::endl;
                 return;
               }
-              Log("Received JSON message: " + msg->str);
+              Log(state, "Received JSON message: " + msg->str);
 
               if (json_message.contains("brightness") &&
                   json_message["brightness"].is_number_integer()) {
@@ -361,12 +410,12 @@ int main(int argc, char *argv[]) {
                             << std::endl;
                   return;
                 }
-                if (new_brightness != brightness.load()) {
-                  Log("Setting brightness to " +
-                      std::to_string(new_brightness));
-                  brightness.store(new_brightness);
+                if (new_brightness != state.brightness.load()) {
+                  Log(state, "Setting brightness to " +
+                                 std::to_string(new_brightness));
+                  state.brightness.store(new_brightness);
                   if (new_brightness > 0) {
-                    redraw_frame.store(true);
+                    state.redraw_frame.store(true);
                   }
                 }
               } else if (json_message.contains("dwell_secs") &&
@@ -376,13 +425,14 @@ int main(int argc, char *argv[]) {
               } else if (json_message.contains("immediate") &&
                          json_message["immediate"].is_boolean()) {
                 if (json_message["immediate"].get<bool>()) {
-                  Log("Received immediate display request");
+                  Log(state, "Received immediate display request");
                   {
                     std::unique_lock<std::mutex> lock(queue_mutex);
                     while (response_queue.size() > 1) {
                       response_queue.pop_front();
                     }
                   }
+                  state.queue_not_full.notify_all();
                   immediate_requests++;
                 }
               } else if (json_message.contains("status") &&
@@ -405,7 +455,7 @@ int main(int argc, char *argv[]) {
                       << std::endl;
           }
         });
-    ws_client.start();
+    ws_client->start();
   } else {
     // Find the start of the path after the scheme
     auto path_start = url.find('/', scheme_end + 3);
@@ -419,22 +469,29 @@ int main(int argc, char *argv[]) {
     client->set_default_headers(
         {{"User-Agent", "Tronberry/1.0"},
          {"Accept", "image/webp, image/*;q=0.8, */*;q=0.5"}});
+    client->set_connection_timeout(30);
+    client->set_read_timeout(30);
     auto path = path_start != std::string::npos
                     ? url.substr(path_start)
                     : "/";  // Extract path or default to "/"
 
     fetch_thread = std::thread([&, client, path]() mutable {
       int retry_count = 0;
-      while (running) {
+      while (state.running) {
         auto res = client->Get(path.c_str());
         if (!res || res->status != 200) {
           std::cerr << "Failed to fetch image from URL: " << url << std::endl;
-          int wait_time = std::min(
-              1 << retry_count,
-              60);  // Exponential backoff with max wait time of 60 seconds
-          wait_time =
-              std::max(wait_time, 1);  // Ensure at least 1 second wait time
-          std::this_thread::sleep_for(std::chrono::seconds(wait_time));
+          // Exponential backoff capped at 60 seconds
+          int wait_time =
+              std::min(1 << std::min(retry_count, 6), 60);
+          wait_time = std::max(wait_time, 1);
+          // Sleep in small increments so we can respond to shutdown
+          auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(wait_time);
+          while (state.running &&
+                 std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+          }
           retry_count++;
           continue;
         }
@@ -446,7 +503,8 @@ int main(int argc, char *argv[]) {
         auto dwell_secs_str = res->get_header_value("Tronbyt-Dwell-Secs", "0");
 
         char *end_ptr = nullptr;
-        response.brightness = std::strtol(brightness_str.c_str(), &end_ptr, 10);
+        response.brightness =
+            std::strtol(brightness_str.c_str(), &end_ptr, 10);
         if (*end_ptr != '\0' || response.brightness < 0 ||
             response.brightness > 100) {
           std::cerr << "Invalid brightness header value: " << brightness_str
@@ -455,7 +513,8 @@ int main(int argc, char *argv[]) {
         }
 
         end_ptr = nullptr;
-        response.dwell_secs = std::strtol(dwell_secs_str.c_str(), &end_ptr, 10);
+        response.dwell_secs =
+            std::strtol(dwell_secs_str.c_str(), &end_ptr, 10);
         if (*end_ptr != '\0') {
           std::cerr << "Invalid dwell_secs header value: " << dwell_secs_str
                     << std::endl;
@@ -467,38 +526,39 @@ int main(int argc, char *argv[]) {
     });
   }
 
-  while (running) {
+  while (state.running) {
     ResponseData response;
     {
       std::unique_lock<std::mutex> lock(queue_mutex);
-      queue_not_empty.wait(
-          lock, [&]() { return !response_queue.empty() || !running; });
-      if (!running) {
+      state.queue_not_empty.wait(
+          lock, [&]() { return !response_queue.empty() || !state.running; });
+      if (!state.running) {
         break;
       }
 
       response = std::move(response_queue.front());
       response_queue.pop_front();
     }
-    queue_not_full.notify_one();
+    state.queue_not_full.notify_one();
 
     if (use_websocket && response.counter > 0) {
       nlohmann::json displaying_msg;
       displaying_msg["displaying"] = response.counter;
-      Log("Displaying message: " + displaying_msg.dump());
-      ws_client.send(displaying_msg.dump());
+      Log(state, "Displaying message: " + displaying_msg.dump());
+      ws_client->send(displaying_msg.dump());
     }
 
     if (response.brightness != -1 &&
-        response.brightness != brightness.load()) {
-      Log("Setting brightness to " + std::to_string(response.brightness));
-      brightness.store(response.brightness);
-      if (brightness.load() > 0) {
-        redraw_frame.store(true);
+        response.brightness != state.brightness.load()) {
+      Log(state,
+          "Setting brightness to " + std::to_string(response.brightness));
+      state.brightness.store(response.brightness);
+      if (state.brightness.load() > 0) {
+        state.redraw_frame.store(true);
       }
     }
 
-    matrix->SetBrightness(brightness.load());
+    matrix->SetBrightness(state.brightness.load());
 
     if (response.data.empty()) {
       continue;
@@ -509,8 +569,12 @@ int main(int argc, char *argv[]) {
         response.data.size()};
     WebPAnimDecoderOptions anim_options;
     WebPAnimDecoderOptionsInit(&anim_options);
-    WebPAnimDecoder *anim_decoder =
-        WebPAnimDecoderNew(&webp_data, &anim_options);
+
+    auto anim_deleter = [](WebPAnimDecoder *d) {
+      if (d) WebPAnimDecoderDelete(d);
+    };
+    std::unique_ptr<WebPAnimDecoder, decltype(anim_deleter)> anim_decoder(
+        WebPAnimDecoderNew(&webp_data, &anim_options), anim_deleter);
 
     const int immediate_requests_at_start = immediate_requests.load();
 
@@ -520,17 +584,17 @@ int main(int argc, char *argv[]) {
       }
       if (startup_animation_playing.load()) {
         std::unique_lock<std::mutex> lock(queue_mutex);
-        return !response_queue.empty() || !running;
+        return !response_queue.empty() || !state.running;
       }
-      return !running;
+      return !state.running;
     };
 
     if (anim_decoder) {
       WebPAnimInfo anim_info;
-      WebPAnimDecoderGetInfo(anim_decoder, &anim_info);
+      WebPAnimDecoderGetInfo(anim_decoder.get(), &anim_info);
       int dwell_secs = response.dwell_secs;
       if (anim_info.frame_count > 1) {
-        DisplayAnimation(matrix, offscreen_canvas, anim_decoder,
+        DisplayAnimation(state, matrix, offscreen_canvas, anim_decoder.get(),
                          anim_info.canvas_width, anim_info.canvas_height,
                          dwell_secs, stop_display_callback);
       } else {
@@ -539,13 +603,15 @@ int main(int argc, char *argv[]) {
         if (dwell_secs == 0) {
           dwell_secs = INITIAL_DWELL_SECS;
         }
-        WebPAnimDecoderGetNext(anim_decoder, &frame_data, &timestamp);
-        DisplayImage(matrix, offscreen_canvas, frame_data,
-                     anim_info.canvas_width, anim_info.canvas_height,
-                     dwell_secs, stop_display_callback);
+        if (!WebPAnimDecoderGetNext(anim_decoder.get(), &frame_data,
+                                    &timestamp)) {
+          std::cerr << "Failed to decode first animation frame" << std::endl;
+        } else {
+          DisplayImage(state, matrix, offscreen_canvas, frame_data,
+                       anim_info.canvas_width, anim_info.canvas_height,
+                       dwell_secs, stop_display_callback);
+        }
       }
-
-      WebPAnimDecoderDelete(anim_decoder);
     } else {
       int width, height;
       uint8_t *image_data =
@@ -555,7 +621,7 @@ int main(int argc, char *argv[]) {
         if (dwell_secs == 0) {
           dwell_secs = INITIAL_DWELL_SECS;
         }
-        DisplayImage(matrix, offscreen_canvas, image_data, width, height,
+        DisplayImage(state, matrix, offscreen_canvas, image_data, width, height,
                      dwell_secs, stop_display_callback);
         WebPFree(image_data);
       } else {
@@ -565,13 +631,14 @@ int main(int argc, char *argv[]) {
     startup_animation_playing.store(false);
   }
 
-  Log("Shutting down...");
-  if (use_websocket) {
-    ws_client.stop();
+  Log(state, "Shutting down...");
+  if (ws_client) {
+    ws_client->stop();
   } else {
     fetch_thread.join();
   }
 
   delete matrix;
+  g_app_state = nullptr;
   return 0;
 }

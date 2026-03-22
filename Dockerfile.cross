@@ -31,7 +31,7 @@ RUN git submodule update --init --recursive && \
     CXX=${CROSS_COMPILE}g++ \
     CC=${CROSS_COMPILE}gcc \
     AR=${CROSS_COMPILE}ar \
-    CFLAGS="-W -Wall -Wextra -Wno-unused-parameter -O3 -fPIC -march=armv8-a" && \
+    MARCH=armv8-a && \
     ${CROSS_COMPILE}strip tronberry
 
 # Stage 2: Create a minimal final image with only the binary
