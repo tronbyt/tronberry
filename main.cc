@@ -373,9 +373,8 @@ int main(int argc, char *argv[]) {
     ws_client.emplace();
     ws_client->setUrl(url);
     ws_client->enableAutomaticReconnection();
-    auto *matrix_ptr = matrix.get();
     ws_client->setOnMessageCallback(
-        [&, matrix_ptr, offscreen_canvas](const ix::WebSocketMessagePtr &msg) {
+        [&](const ix::WebSocketMessagePtr &msg) {
           if (!state.running) {
             return;
           }
