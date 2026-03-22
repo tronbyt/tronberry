@@ -13,7 +13,7 @@
 #include <thread>
 
 #include "httplib.h"
-#include "ixwebsocket/IXWebSocket.h"
+#include "websocket.h"
 #include "json.hpp"
 #include "led-matrix.h"
 #include "startup.h"
@@ -347,7 +347,7 @@ int main(int argc, char *argv[]) {
   response_queue.push_back(std::move(startup_response));
 
   std::thread fetch_thread;
-  std::optional<ix::WebSocket> ws_client;
+  std::optional<ws::Client> ws_client;
 
   auto add_to_queue = [&](ResponseData response) {
     std::unique_lock<std::mutex> lock(queue_mutex);
@@ -374,11 +374,11 @@ int main(int argc, char *argv[]) {
     ws_client->setUrl(url);
     ws_client->enableAutomaticReconnection();
     ws_client->setOnMessageCallback(
-        [&](const ix::WebSocketMessagePtr &msg) {
+        [&](const ws::Message &msg) {
           if (!state.running) {
             return;
           }
-          if (msg->type == ix::WebSocketMessageType::Open) {
+          if (msg.type == ws::MessageType::Open) {
             Log(state, "WebSocket connection established");
             const nlohmann::json client_info_msg = {
                 {"client_info",
@@ -388,22 +388,22 @@ int main(int argc, char *argv[]) {
                   {"mac", get_mac_address()}}}};
             Log(state, "Sending client info: " + client_info_msg.dump());
             ws_client->send(client_info_msg.dump());
-          } else if (msg->type == ix::WebSocketMessageType::Message) {
-            if (msg->binary) {
+          } else if (msg.type == ws::MessageType::Message) {
+            if (msg.binary) {
               Log(state, "Received image of size " +
-                             std::to_string(msg->str.size()) + " bytes");
+                             std::to_string(msg.data.size()) + " bytes");
               ResponseData response = {
-                  msg->str, -1, next_dwell_secs.load(), 0};
+                  msg.data, -1, next_dwell_secs.load(), 0};
               add_to_queue(std::move(response));
             } else {
               auto json_message =
-                  nlohmann::json::parse(msg->str, nullptr, false);
+                  nlohmann::json::parse(msg.data, nullptr, false);
               if (json_message.is_discarded()) {
                 std::cerr << "JSON parsing error: Invalid JSON format"
                           << std::endl;
                 return;
               }
-              Log(state, "Received JSON message: " + msg->str);
+              Log(state, "Received JSON message: " + msg.data);
 
               if (json_message.contains("brightness") &&
                   json_message["brightness"].is_number_integer()) {
@@ -446,15 +446,15 @@ int main(int argc, char *argv[]) {
                           << json_message["message"].get<std::string>()
                           << std::endl;
               } else {
-                std::cerr << "Invalid JSON message format: " << msg->str
+                std::cerr << "Invalid JSON message format: " << msg.data
                           << std::endl;
               }
             }
-          } else if (msg->type == ix::WebSocketMessageType::Error) {
-            std::cerr << "WebSocket error: " << msg->errorInfo.reason
+          } else if (msg.type == ws::MessageType::Error) {
+            std::cerr << "WebSocket error: " << msg.error_reason
                       << std::endl;
-          } else if (msg->type == ix::WebSocketMessageType::Close) {
-            std::cerr << "WebSocket closed: " << msg->closeInfo.reason
+          } else if (msg.type == ws::MessageType::Close) {
+            std::cerr << "WebSocket closed: " << msg.close_reason
                       << std::endl;
           }
         });

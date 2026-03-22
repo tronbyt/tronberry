@@ -12,7 +12,7 @@ The project is architected with a clear separation between data fetching and ren
 
 -   **Language:** C++23
 -   **Display Driver:** `rpi-rgb-led-matrix` (included as a git submodule). This is the core library for controlling the LED panel on the Raspberry Pi.
--   **WebSocket Communication:** `IXWebSocket` (included as a git submodule). A lightweight, cross-platform WebSocket library used for real-time communication with the server.
+-   **WebSocket Communication:** `websocket.h`. A minimal, header-only WebSocket client built on POSIX sockets and OpenSSL, with auto-reconnect.
 -   **HTTP Client:** `httplib.h`. A single-header C++ HTTP/HTTPS client library.
 -   **JSON Parsing:** `nlohmann/json`. A popular C++ library for working with JSON, used for parsing WebSocket control messages.
 -   **Image Decoding:** `libwebp`. Used for decoding WebP images and animations.
