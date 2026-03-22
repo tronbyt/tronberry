@@ -1,0 +1,9 @@
+.git
+.claude
+.devcontainer
+.github
+.vscode
+*.o
+*.d
+*.a
+tronberry

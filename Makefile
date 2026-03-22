@@ -39,7 +39,7 @@ clean: check-and-reinit-submodules
 	find . -name '*.d' -delete
 
 check-and-reinit-submodules:
-	@if git submodule status | egrep -q '^[-+]' ; then \
+	@if [ -d .git ] && git submodule status | egrep -q '^[-+]' ; then \
 		echo "INFO: Need to reinitialize git submodules"; \
 		git submodule update --init; \
 	fi

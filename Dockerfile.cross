@@ -5,7 +5,6 @@ FROM debian:trixie AS builder
 RUN dpkg --add-architecture arm64 && \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    git \
     make \
     binutils \
     g++-aarch64-linux-gnu \
@@ -23,10 +22,8 @@ WORKDIR /usr/src/app
 # Copy the entire project context
 COPY . .
 
-# Initialize submodules, build, and strip the binary
 ARG FIRMWARE_VERSION=dev
-RUN git submodule update --init --recursive && \
-    make \
+RUN make \
     FIRMWARE_VERSION=${FIRMWARE_VERSION} \
     CXX=${CROSS_COMPILE}g++ \
     CC=${CROSS_COMPILE}gcc \
