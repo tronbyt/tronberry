@@ -121,7 +121,8 @@ static bool WaitWhileDark(
 }
 
 // Shared helper: checks for brightness change and redraws if needed.
-static void HandleBrightnessRedraw(AppState &state, RGBMatrix *matrix,
+// Returns true if a redraw was performed.
+static bool HandleBrightnessRedraw(AppState &state, RGBMatrix *matrix,
                                    FrameCanvas *&canvas,
                                    const uint8_t *frame_data, int width,
                                    int height) {
@@ -130,7 +131,9 @@ static void HandleBrightnessRedraw(AppState &state, RGBMatrix *matrix,
     matrix->SetBrightness(state.brightness.load());
     DrawFrame(canvas, frame_data, width, height);
     canvas = matrix->SwapOnVSync(canvas);
+    return true;
   }
+  return false;
 }
 
 static void DisplayImage(AppState &state, RGBMatrix *matrix,
@@ -205,9 +208,8 @@ static void DisplayAnimation(
     }
 
     if (last_frame_data) {
-      HandleBrightnessRedraw(state, matrix, canvas, last_frame_data, width,
-                             height);
-      if (state.redraw_frame.load()) {
+      if (HandleBrightnessRedraw(state, matrix, canvas, last_frame_data, width,
+                                 height)) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         continue;
       }
@@ -314,7 +316,8 @@ int main(int argc, char *argv[]) {
   static std::atomic<int> ws_message_counter(0);
   static std::atomic<int> immediate_requests(0);
 
-  RGBMatrix *matrix = CreateMatrixFromOptions(matrix_options, runtime_options);
+  std::unique_ptr<RGBMatrix> matrix(
+      CreateMatrixFromOptions(matrix_options, runtime_options));
   if (!matrix) {
     std::cerr << "Failed to initialize RGB matrix" << std::endl;
     return 1;
@@ -370,8 +373,9 @@ int main(int argc, char *argv[]) {
     ws_client.emplace();
     ws_client->setUrl(url);
     ws_client->enableAutomaticReconnection();
+    auto *matrix_ptr = matrix.get();
     ws_client->setOnMessageCallback(
-        [&, matrix, offscreen_canvas](const ix::WebSocketMessagePtr &msg) {
+        [&, matrix_ptr, offscreen_canvas](const ix::WebSocketMessagePtr &msg) {
           if (!state.running) {
             return;
           }
@@ -594,7 +598,7 @@ int main(int argc, char *argv[]) {
       WebPAnimDecoderGetInfo(anim_decoder.get(), &anim_info);
       int dwell_secs = response.dwell_secs;
       if (anim_info.frame_count > 1) {
-        DisplayAnimation(state, matrix, offscreen_canvas, anim_decoder.get(),
+        DisplayAnimation(state, matrix.get(), offscreen_canvas, anim_decoder.get(),
                          anim_info.canvas_width, anim_info.canvas_height,
                          dwell_secs, stop_display_callback);
       } else {
@@ -607,7 +611,7 @@ int main(int argc, char *argv[]) {
                                     &timestamp)) {
           std::cerr << "Failed to decode first animation frame" << std::endl;
         } else {
-          DisplayImage(state, matrix, offscreen_canvas, frame_data,
+          DisplayImage(state, matrix.get(), offscreen_canvas, frame_data,
                        anim_info.canvas_width, anim_info.canvas_height,
                        dwell_secs, stop_display_callback);
         }
@@ -621,7 +625,7 @@ int main(int argc, char *argv[]) {
         if (dwell_secs == 0) {
           dwell_secs = INITIAL_DWELL_SECS;
         }
-        DisplayImage(state, matrix, offscreen_canvas, image_data, width, height,
+        DisplayImage(state, matrix.get(), offscreen_canvas, image_data, width, height,
                      dwell_secs, stop_display_callback);
         WebPFree(image_data);
       } else {
@@ -638,7 +642,6 @@ int main(int argc, char *argv[]) {
     fetch_thread.join();
   }
 
-  delete matrix;
   g_app_state = nullptr;
   return 0;
 }
