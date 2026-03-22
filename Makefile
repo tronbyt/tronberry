@@ -2,7 +2,7 @@ CXX ?= g++
 MARCH ?= native
 INCLUDES := -I/usr/local/include -I/opt/homebrew/include -Ilibs
 LIBPATHS := -L/usr/local/lib -L/opt/homebrew/lib
-LDFLAGS := $(LIBPATHS) -lwebp -lwebpdemux -lssl -lcrypto
+LDFLAGS := $(LIBPATHS) -lwebp -lwebpdemux -lssl -lcrypto -lz
 CFLAGS=-W -Wall -Wextra -Wno-unused-parameter -O3 -fPIC -march=$(MARCH)
 FIRMWARE_VERSION ?= dev
 CXXFLAGS :=$(CFLAGS) -fno-exceptions -std=c++23 -MMD -MP -DFIRMWARE_VERSION='"$(FIRMWARE_VERSION)"'
@@ -14,20 +14,11 @@ RGB_LIBDIR=$(RGB_LIB_DISTRIBUTION)/lib
 RGB_LIBRARY_NAME=rgbmatrix
 RGB_LIBRARY=$(RGB_LIBDIR)/lib$(RGB_LIBRARY_NAME).a
 RGB_LDFLAGS+=-L$(RGB_LIBDIR) -l$(RGB_LIBRARY_NAME) -lrt -lm -lpthread
-IXWEBSOCKET_LIBRARY=libs/IXWebSocket/libixwebsocket.a
-IXWEBSOCKET_LDFLAGS=-Llibs/IXWebSocket -lixwebsocket -lz
-IXWEBSOCKET_INCDIR=libs/IXWebSocket
-CPPFLAGS=-D_FILE_OFFSET_BITS=64 -DCPPHTTPLIB_OPENSSL_SUPPORT -DCPPHTTPLIB_NO_EXCEPTIONS -DCPPHTTPLIB_NO_DEFAULT_USER_AGENT -DCPPHTTPLIB_ZLIB_SUPPORT -DIXWEBSOCKET_USE_TLS -DIXWEBSOCKET_USE_OPEN_SSL -DIXWEBSOCKET_USE_ZLIB -DJSON_NOEXCEPTION -DJSON_NO_IO -DJSON_USE_IMPLICIT_CONVERSIONS=0 $(INCLUDES) -I$(RGB_INCDIR) -I$(IXWEBSOCKET_INCDIR)
+CPPFLAGS=-D_FILE_OFFSET_BITS=64 -DCPPHTTPLIB_OPENSSL_SUPPORT -DCPPHTTPLIB_NO_EXCEPTIONS -DCPPHTTPLIB_NO_DEFAULT_USER_AGENT -DCPPHTTPLIB_ZLIB_SUPPORT -DJSON_NOEXCEPTION -DJSON_NO_IO -DJSON_USE_IMPLICIT_CONVERSIONS=0 $(INCLUDES) -I$(RGB_INCDIR)
 
 .PHONY: all clean $(RGB_LIBRARY) check-and-reinit-submodules
 
 all: $(TARGET)
-
-IXWEBSOCKET_OBJS := $(patsubst %.cpp,%.o,$(wildcard libs/IXWebSocket/ixwebsocket/*.cpp))
-
-$(IXWEBSOCKET_LIBRARY): check-and-reinit-submodules $(IXWEBSOCKET_OBJS)
-	@echo "Creating IXWebSocket static library...";
-	$(AR) rcs $@ $(filter-out check-and-reinit-submodules,$^)
 
 $(RGB_LIBRARY): check-and-reinit-submodules
 	$(MAKE) -C $(RGB_LIBDIR) CFLAGS="$(CFLAGS) -DDEFAULT_HARDWARE='\"regular\"'"
@@ -37,8 +28,8 @@ DEPS := $(OBJS:.o=.d)
 
 -include $(DEPS)
 
-$(TARGET): $(OBJS) $(RGB_LIBRARY) $(IXWEBSOCKET_LIBRARY)
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $(TARGET) $(OBJS) $(LDFLAGS) $(RGB_LDFLAGS) $(IXWEBSOCKET_LDFLAGS)
+$(TARGET): $(OBJS) $(RGB_LIBRARY)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $(TARGET) $(OBJS) $(LDFLAGS) $(RGB_LDFLAGS)
 
 clean: check-and-reinit-submodules
 	rm -f $(TARGET)
