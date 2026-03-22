@@ -152,8 +152,18 @@ echo "Use 'sudo systemctl status tronberry' to check status."
 # Prompt for Wi-Fi SSID to disable autoconnect-retries
 read -rp "Enter your Wi-Fi SSID (case-sensitive) to enable auto-reconnect on disconnect: " WIFI_SSID
 if [ -n "$WIFI_SSID" ]; then
-  echo "Applying autoconnect-retries=0 for Wi-Fi network: $WIFI_SSID"
-  sudo nmcli connection modify "$WIFI_SSID" connection.autoconnect-retries 0
+  # The NM connection name may differ from the SSID (e.g. netplan-wlan0-SSID).
+  # Try the SSID as-is first, then fall back to searching by name.
+  CONN_NAME="$WIFI_SSID"
+  if ! nmcli connection show "$CONN_NAME" >/dev/null 2>&1; then
+    CONN_NAME=$(nmcli -g NAME connection show | grep -F "$WIFI_SSID" | head -n1)
+  fi
+  if [ -n "$CONN_NAME" ]; then
+    echo "Applying autoconnect-retries=0 for Wi-Fi connection: $CONN_NAME"
+    sudo nmcli connection modify "$CONN_NAME" connection.autoconnect-retries 0
+  else
+    echo "Warning: Could not find a NetworkManager connection for SSID '$WIFI_SSID'. Skipping."
+  fi
 else
   echo "No SSID entered. Skipping Wi-Fi autoconnect tweak."
 fi
