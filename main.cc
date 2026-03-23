@@ -1,6 +1,8 @@
 #include <webp/decode.h>
 #include <webp/demux.h>
 
+#include <unistd.h>
+
 #include <chrono>
 #include <deque>
 #include <fstream>
@@ -41,6 +43,15 @@ struct AppState {
 };
 
 static AppState *g_app_state = nullptr;
+
+static std::string get_hostname() {
+  char buf[256];
+  if (gethostname(buf, sizeof(buf)) == 0) {
+    buf[sizeof(buf) - 1] = '\0';
+    return buf;
+  }
+  return "unknown";
+}
 
 static std::string get_mac_address() {
   for (const char *iface_name : {"eth0", "wlan0"}) {
@@ -385,7 +396,9 @@ int main(int argc, char *argv[]) {
                  {{"firmware_version", FIRMWARE_VERSION},
                   {"firmware_type", FIRMWARE_TYPE},
                   {"protocol_version", PROTOCOL_VERSION},
-                  {"mac", get_mac_address()}}}};
+                  {"mac", get_mac_address()},
+                  {"hostname", get_hostname()},
+                  {"image_url", url}}}};
             Log(state, "Sending client info: " + client_info_msg.dump());
             ws_client->send(client_info_msg.dump());
           } else if (msg.type == ws::MessageType::Message) {
@@ -438,6 +451,13 @@ int main(int argc, char *argv[]) {
                   state.queue_not_full.notify_all();
                   immediate_requests++;
                 }
+              } else if (json_message.contains("reboot") &&
+                         json_message["reboot"].is_boolean()) {
+                if (json_message["reboot"].get<bool>()) {
+                  Log(state, "Reboot requested via WebSocket");
+                  std::cerr << "Rebooting..." << std::endl;
+                  system("sudo reboot");
+                }
               } else if (json_message.contains("status") &&
                          json_message["status"].is_string() &&
                          json_message.contains("message") &&
@@ -471,7 +491,8 @@ int main(int argc, char *argv[]) {
     }
     client->set_default_headers(
         {{"User-Agent", "Tronberry/1.0"},
-         {"Accept", "image/webp, image/*;q=0.8, */*;q=0.5"}});
+         {"Accept", "image/webp, image/*;q=0.8, */*;q=0.5"},
+         {"X-Firmware-Version", FIRMWARE_VERSION}});
     client->set_connection_timeout(30);
     client->set_read_timeout(30);
     auto path = path_start != std::string::npos
