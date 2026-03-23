@@ -458,7 +458,7 @@ int main(int argc, char *argv[]) {
                   Log(state, "Reboot requested via WebSocket");
                   std::cerr << "Rebooting..." << std::endl;
                   sync();
-                  reboot(0x01234567);  // RB_AUTOBOOT
+                  reboot(RB_AUTOBOOT);
                 }
               } else if (json_message.contains("status") &&
                          json_message["status"].is_string() &&
