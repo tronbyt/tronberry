@@ -1,6 +1,7 @@
 #include <webp/decode.h>
 #include <webp/demux.h>
 
+#include <sys/reboot.h>
 #include <unistd.h>
 
 #include <chrono>
@@ -456,7 +457,8 @@ int main(int argc, char *argv[]) {
                 if (json_message["reboot"].get<bool>()) {
                   Log(state, "Reboot requested via WebSocket");
                   std::cerr << "Rebooting..." << std::endl;
-                  system("sudo reboot");
+                  sync();
+                  reboot(0x01234567);  // RB_AUTOBOOT
                 }
               } else if (json_message.contains("status") &&
                          json_message["status"].is_string() &&
