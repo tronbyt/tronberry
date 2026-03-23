@@ -5,19 +5,21 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <condition_variable>
 #include <deque>
 #include <fstream>
 #include <format>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <queue>
 #include <string>
 #include <thread>
 
-#include "httplib.h"
+#include "httpclient.h"
 #include "websocket.h"
-#include "json.hpp"
+#include "json.h"
 #include "led-matrix.h"
 #include "startup.h"
 
@@ -372,7 +374,7 @@ int main(int argc, char *argv[]) {
     if (use_websocket) {
       ws_message_counter++;
       response.counter = ws_message_counter.load();
-      nlohmann::json queued_msg;
+      json::Value queued_msg;
       queued_msg["queued"] = response.counter;
       Log(state, "Queued message: " + queued_msg.dump());
       ws_client->send(queued_msg.dump());
@@ -392,14 +394,15 @@ int main(int argc, char *argv[]) {
           }
           if (msg.type == ws::MessageType::Open) {
             Log(state, "WebSocket connection established");
-            const nlohmann::json client_info_msg = {
-                {"client_info",
-                 {{"firmware_version", FIRMWARE_VERSION},
-                  {"firmware_type", FIRMWARE_TYPE},
-                  {"protocol_version", PROTOCOL_VERSION},
-                  {"mac", get_mac_address()},
-                  {"hostname", get_hostname()},
-                  {"image_url", url}}}};
+            json::Value client_info;
+            client_info["firmware_version"] = FIRMWARE_VERSION;
+            client_info["firmware_type"] = FIRMWARE_TYPE;
+            client_info["protocol_version"] = PROTOCOL_VERSION;
+            client_info["mac"] = get_mac_address();
+            client_info["hostname"] = get_hostname();
+            client_info["image_url"] = url;
+            json::Value client_info_msg;
+            client_info_msg["client_info"] = std::move(client_info);
             Log(state, "Sending client info: " + client_info_msg.dump());
             ws_client->send(client_info_msg.dump());
           } else if (msg.type == ws::MessageType::Message) {
@@ -410,8 +413,7 @@ int main(int argc, char *argv[]) {
                   msg.data, -1, next_dwell_secs.load(), 0};
               add_to_queue(std::move(response));
             } else {
-              auto json_message =
-                  nlohmann::json::parse(msg.data, nullptr, false);
+              auto json_message = json::Value::parse(msg.data);
               if (json_message.is_discarded()) {
                 std::cerr << "JSON parsing error: Invalid JSON format"
                           << std::endl;
@@ -486,7 +488,7 @@ int main(int argc, char *argv[]) {
     auto path_start = url.find('/', scheme_end + 3);
     auto base_url = url.substr(
         0, path_start != std::string::npos ? path_start : url.length());
-    auto client = std::make_shared<httplib::Client>(base_url);
+    auto client = std::make_shared<http::Client>(base_url);
     if (!client->is_valid()) {
       std::cerr << "Invalid URL: Unable to create client" << std::endl;
       return 1;
@@ -568,7 +570,7 @@ int main(int argc, char *argv[]) {
     state.queue_not_full.notify_one();
 
     if (use_websocket && response.counter > 0) {
-      nlohmann::json displaying_msg;
+      json::Value displaying_msg;
       displaying_msg["displaying"] = response.counter;
       Log(state, "Displaying message: " + displaying_msg.dump());
       ws_client->send(displaying_msg.dump());
