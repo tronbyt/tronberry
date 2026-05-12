@@ -100,13 +100,28 @@ static void InterruptHandler(int) {
 
 static void DrawFrame(FrameCanvas *canvas, const uint8_t *frame_data, int width,
                       int height) {
-  int max_x = std::min(width, canvas->width());
-  int max_y = std::min(height, canvas->height());
-  for (int y = 0; y < max_y; ++y) {
-    for (int x = 0; x < max_x; ++x) {
-      int index = (y * width + x) * 4;  // RGBA
-      canvas->SetPixel(x, y, frame_data[index], frame_data[index + 1],
-                       frame_data[index + 2]);
+  const int canvas_w = canvas->width();
+  const int canvas_h = canvas->height();
+  // Integer nearest-neighbor upscale when the panel is larger than the source
+  // frame (e.g. server sends 64x32 to a 128x64 FM6353 panel). Centered. When
+  // the source is larger than the panel we fall through to scale=1 and clip
+  // top-left, matching the legacy behavior.
+  int scale = 1;
+  if (width > 0 && height > 0) {
+    scale = std::min(canvas_w / width, canvas_h / height);
+    if (scale < 1) scale = 1;
+  }
+  const int draw_w = std::min(width * scale, canvas_w);
+  const int draw_h = std::min(height * scale, canvas_h);
+  const int offset_x = (canvas_w - draw_w) / 2;
+  const int offset_y = (canvas_h - draw_h) / 2;
+  for (int y = 0; y < draw_h; ++y) {
+    const int src_y = y / scale;
+    for (int x = 0; x < draw_w; ++x) {
+      const int src_x = x / scale;
+      const int index = (src_y * width + src_x) * 4;  // RGBA
+      canvas->SetPixel(offset_x + x, offset_y + y, frame_data[index],
+                       frame_data[index + 1], frame_data[index + 2]);
     }
   }
 }
