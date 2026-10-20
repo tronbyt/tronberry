@@ -57,12 +57,13 @@ For testing, you can also run it manually (as root):
 sudo ./tronberry ${TRONBYT_URL}
 ```
 
-If you use `tronberry` with the original Tidbyt display, add the `--led-panel-type=FM6126A` flag. For a list of available options, run `./tronberry --help`, there are many knobs to tweak.
-
 ### Panel & Color Configuration
-- **Tidbyt Gen 1 Panels:** Add `--led-panel-type=FM6126A`.
-- **Swapped Colors (Blue showing as Green):** Many HUB75 matrix panels have the Green and Blue channel lines reversed. Add `--led-rgb-sequence=RBG` (or `--led-swap-green-blue`) to correct this. Other sequences like `BGR`, `GRB`, `GBR`, etc. are also supported.
-- **Slowdown GPIO:** If you observe glitches or horizontal line flickering, adjust `--led-slowdown-gpio=4` (Pi Zero 2W / Pi 3 / Pi 4).
+
+For a list of all available options, run `./tronberry --help`. Key configuration flags include:
+
+- **Original Tidbyt Display Panels:** If repurposing an original Tidbyt display panel directly connected to a Raspberry Pi, add `--led-panel-type=FM6126A` to initialize the panel controller. *(Note: Standalone ESP32 Tidbyt Gen 1 devices use Tronbyt Server's built-in "Swap Colors" firmware setting instead).*
+- **DIY Matrix Builds & Swapped Colors:** Generic HUB75 matrix panels used in DIY builds often have different RGB pin orderings (for example, Green and Blue channel lines reversed, causing blue to show as green). Add `--led-rgb-sequence=RBG` (or `--led-swap-green-blue`) to correct this. Other sequences like `BGR`, `GRB`, `GBR`, etc. are also supported.
+- **Slowdown GPIO (Anti-Flicker / Glitching):** Faster Raspberry Pi models (Zero 2W, Pi 3, Pi 4, Pi 5) can outpace GPIO switching speeds on certain panels. If you observe horizontal line glitching or flickering, adjust `--led-slowdown-gpio=4` (default is `2`).
 
 ## Sound Notifications & Audio Configuration
 
