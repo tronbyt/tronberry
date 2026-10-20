@@ -25,6 +25,7 @@
 #include "websocket.h"
 #include "json.h"
 #include "led-matrix.h"
+#include "sound.h"
 #include "startup.h"
 
 #ifndef FIRMWARE_VERSION
@@ -90,118 +91,6 @@ static void Log(const AppState &state, const std::string &message) {
   std::cout << "[" << timebuf << "] " << message << std::endl;
 }
 
-struct SoundRequest {
-  std::string url;
-  int volume{100};
-};
-
-class SoundPlayer {
- public:
-  SoundPlayer() : worker_([this]() { WorkerLoop(); }) {}
-  ~SoundPlayer() { Stop(); }
-
-  void Play(const std::string &sound_url, int volume, const AppState &state) {
-    if (sound_url.empty() || !state.running || stopped_) {
-      return;
-    }
-    if (volume < 0) volume = 0;
-    if (volume > 100) volume = 100;
-    Log(state, "Queueing sound: " + sound_url + " (vol " + std::to_string(volume) + "%)");
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      if (queue_.size() >= 2) {
-        queue_.pop();
-      }
-      queue_.push({sound_url, volume});
-    }
-    cv_.notify_one();
-  }
-
-  void Play(const std::string &sound_url, const AppState &state) {
-    Play(sound_url, 100, state);
-  }
-
-  void Stop() {
-    bool expected = false;
-    if (!stopped_.compare_exchange_strong(expected, true)) {
-      return;
-    }
-    {
-      std::lock_guard<std::mutex> lock(mutex_);
-      while (!queue_.empty()) queue_.pop();
-    }
-    cv_.notify_all();
-    pid_t pid = current_pid_.load();
-    if (pid > 0) {
-      kill(pid, SIGTERM);
-    }
-    if (worker_.joinable()) {
-      worker_.join();
-    }
-  }
-
- private:
-  void WorkerLoop() {
-    while (!stopped_) {
-      SoundRequest req;
-      {
-        std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock, [this]() { return stopped_ || !queue_.empty(); });
-        if (stopped_) {
-          break;
-        }
-        req = std::move(queue_.front());
-        queue_.pop();
-      }
-
-      pid_t pid = fork();
-      if (pid < 0) {
-        std::cerr << "Failed to fork for sound playback" << std::endl;
-        continue;
-      }
-      if (pid == 0) {
-        // Child process: redirect stdio to /dev/null
-        int devnull = open("/dev/null", O_RDWR);
-        if (devnull >= 0) {
-          dup2(devnull, STDIN_FILENO);
-          dup2(devnull, STDOUT_FILENO);
-          dup2(devnull, STDERR_FILENO);
-          if (devnull > STDERR_FILENO) {
-            close(devnull);
-          }
-        }
-        std::string mpv_vol = "--volume=" + std::to_string(req.volume);
-        std::string ffplay_vol = std::to_string(req.volume);
-        execlp("mpv", "mpv", "--ao=alsa", "--no-video", "--really-quiet",
-               mpv_vol.c_str(), req.url.c_str(), static_cast<char *>(nullptr));
-        execlp("ffplay", "ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet",
-               "-volume", ffplay_vol.c_str(), req.url.c_str(),
-               static_cast<char *>(nullptr));
-        execlp("aplay", "aplay", "-q", req.url.c_str(),
-               static_cast<char *>(nullptr));
-        _exit(127);
-      }
-
-      current_pid_ = pid;
-      int status = 0;
-      waitpid(pid, &status, 0);
-      current_pid_ = -1;
-      if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
-        std::cerr << "Sound player not found (install mpv or ffplay)" << std::endl;
-      }
-    }
-  }
-
-  std::queue<SoundRequest> queue_;
-  std::mutex mutex_;
-  std::condition_variable cv_;
-  std::atomic<bool> stopped_{false};
-  std::atomic<pid_t> current_pid_{-1};
-  std::thread worker_;
-};
-
-static SoundPlayer *g_sound_player = nullptr;
-
 static void InterruptHandler(int) {
   // Only the atomic store is strictly signal-safe. The notify_all calls on
   // condition variables are technically undefined behavior in a signal handler,
@@ -212,16 +101,7 @@ static void InterruptHandler(int) {
     g_app_state->queue_not_empty.notify_all();
     g_app_state->queue_not_full.notify_all();
   }
-  if (g_sound_player) {
-    g_sound_player->Stop();
-  }
-}
-
-static void PlaySound(const std::string &sound_url, int volume,
-                      const AppState &state) {
-  if (g_sound_player) {
-    g_sound_player->Play(sound_url, volume, state);
-  }
+  StopSoundPlayer();
 }
 
 static std::string get_self_executable_path() {
@@ -366,9 +246,7 @@ static void PerformSelfUpdate(const std::string &ota_url, AppState &state) {
   std::cerr << "Self-update installed successfully. Exiting for restart."
             << std::endl;
 
-  if (g_sound_player) {
-    g_sound_player->Stop();
-  }
+  StopSoundPlayer();
   state.running = false;
   state.queue_not_empty.notify_all();
   state.queue_not_full.notify_all();
@@ -563,8 +441,7 @@ static int usage(const char *progname, const char *msg = NULL) {
 int main(int argc, char *argv[]) {
   AppState state;
   g_app_state = &state;
-  SoundPlayer sound_player;
-  g_sound_player = &sound_player;
+  InitSoundPlayer([&state](const std::string &msg) { Log(state, msg); });
 
   RGBMatrix::Options matrix_options;
   matrix_options.rows = 32;
@@ -813,7 +690,7 @@ int main(int argc, char *argv[]) {
                 if (json_message["reboot"].get<bool>()) {
                   Log(state, "Reboot requested via WebSocket");
                   std::cerr << "Rebooting..." << std::endl;
-                  sound_player.Stop();
+                  StopSoundPlayer();
                   sync();
                   reboot(RB_AUTOBOOT);
                 }
@@ -830,7 +707,7 @@ int main(int argc, char *argv[]) {
                   default_volume.store(volume);
                 }
                 if (!sound_str.empty()) {
-                  PlaySound(resolve_sound_url(sound_str), volume, state);
+                  PlaySound(resolve_sound_url(sound_str), volume);
                 }
               } else if (json_message.contains("volume") &&
                          json_message["volume"].is_number_integer()) {
@@ -963,7 +840,7 @@ int main(int argc, char *argv[]) {
         if (!reboot_hdr.empty() && (reboot_hdr == "true" || reboot_hdr == "1")) {
           Log(state, "Reboot requested via HTTP header");
           std::cerr << "Rebooting..." << std::endl;
-          sound_player.Stop();
+          StopSoundPlayer();
           sync();
           reboot(RB_AUTOBOOT);
         }
@@ -1009,7 +886,7 @@ int main(int argc, char *argv[]) {
 
     if (!response.sound_url.empty()) {
       int vol = response.volume >= 0 ? response.volume : default_volume.load();
-      PlaySound(response.sound_url, vol, state);
+      PlaySound(response.sound_url, vol);
     }
 
     if (response.data.empty()) {
@@ -1084,14 +961,13 @@ int main(int argc, char *argv[]) {
   }
 
   Log(state, "Shutting down...");
-  sound_player.Stop();
+  ShutdownSoundPlayer();
   if (ws_client) {
     ws_client->stop();
   } else {
     fetch_thread.join();
   }
 
-  g_sound_player = nullptr;
   g_app_state = nullptr;
   return 0;
 }

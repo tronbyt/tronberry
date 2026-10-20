@@ -7,7 +7,7 @@ CFLAGS=-W -Wall -Wextra -Wno-unused-parameter -O3 -fPIC -march=$(MARCH)
 FIRMWARE_VERSION ?= dev
 CXXFLAGS :=$(CFLAGS) -fno-exceptions -std=c++23 -MMD -MP -DFIRMWARE_VERSION='"$(FIRMWARE_VERSION)"'
 TARGET := tronberry
-SRCS := main.cc startup.cc startup_assets.S
+SRCS := main.cc startup.cc sound.cc startup_assets.S
 RGB_LIB_DISTRIBUTION=libs/rpi-rgb-led-matrix
 RGB_INCDIR=$(RGB_LIB_DISTRIBUTION)/include
 RGB_LIBDIR=$(RGB_LIB_DISTRIBUTION)/lib
