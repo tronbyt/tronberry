@@ -86,7 +86,7 @@ Description=Tronberry LED Matrix Service
 After=network-online.target sound.target
 
 [Service]
-ExecStart=/home/brombomb/tronberry/tronberry ws://my-server:7000/tronberry/ws --led-no-drop-privs --led-rows=64 --led-cols=128
+ExecStart=/home/pi/tronberry/tronberry ws://my-server:8000/<device-id>/ws --led-no-drop-privs --led-rows=64 --led-cols=128
 ```
 
 ### Hardware Volume (ALSA Mixer)
