@@ -238,10 +238,15 @@ class Client {
     RAND_bytes(key_bytes, sizeof(key_bytes));
     std::string key = base64Encode(key_bytes, sizeof(key_bytes));
 
+    std::string host_header = host_;
+    if ((use_tls_ && port_ != 443) || (!use_tls_ && port_ != 80)) {
+      host_header += ":" + std::to_string(port_);
+    }
+
     std::string request = "GET " + path_ +
                           " HTTP/1.1\r\n"
                           "Host: " +
-                          host_ +
+                          host_header +
                           "\r\n"
                           "Upgrade: websocket\r\n"
                           "Connection: Upgrade\r\n"

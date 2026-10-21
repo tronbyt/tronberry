@@ -103,11 +103,16 @@ class Client {
       }
     }
 
+    std::string host_header = host_;
+    if ((use_tls_ && port_ != 443) || (!use_tls_ && port_ != 80)) {
+      host_header += ":" + std::to_string(port_);
+    }
+
     // Build request
     std::string req = "GET " + std::string(path) +
                       " HTTP/1.1\r\n"
                       "Host: " +
-                      host_ + "\r\nConnection: close\r\n";
+                      host_header + "\r\nConnection: close\r\n";
     for (auto &[k, v] : default_headers_) {
       req += k + ": " + v + "\r\n";
     }

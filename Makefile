@@ -7,7 +7,7 @@ CFLAGS=-W -Wall -Wextra -Wno-unused-parameter -O3 -fPIC -march=$(MARCH)
 FIRMWARE_VERSION ?= dev
 CXXFLAGS :=$(CFLAGS) -fno-exceptions -std=c++23 -MMD -MP -DFIRMWARE_VERSION='"$(FIRMWARE_VERSION)"'
 TARGET := tronberry
-SRCS := main.cc startup.cc
+SRCS := main.cc startup.cc sound.cc startup_assets.S
 RGB_LIB_DISTRIBUTION=libs/rpi-rgb-led-matrix
 RGB_INCDIR=$(RGB_LIB_DISTRIBUTION)/include
 RGB_LIBDIR=$(RGB_LIB_DISTRIBUTION)/lib
@@ -23,10 +23,13 @@ all: $(TARGET)
 $(RGB_LIBRARY): check-and-reinit-submodules
 	$(MAKE) -C $(RGB_LIBDIR) CFLAGS="$(CFLAGS) -DDEFAULT_HARDWARE='\"regular\"'"
 
-OBJS := $(SRCS:.cc=.o)
+OBJS := $(patsubst %.cc,%.o,$(patsubst %.S,%.o,$(SRCS)))
 DEPS := $(OBJS:.o=.d)
 
 -include $(DEPS)
+
+%.o: %.S
+	$(CXX) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(TARGET): $(OBJS) $(RGB_LIBRARY)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $(TARGET) $(OBJS) $(LDFLAGS) $(RGB_LDFLAGS)

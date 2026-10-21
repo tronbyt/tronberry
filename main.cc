@@ -1,7 +1,11 @@
 #include <webp/decode.h>
 #include <webp/demux.h>
 
+#include <fcntl.h>
+#include <limits.h>
 #include <sys/reboot.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <chrono>
@@ -21,6 +25,7 @@
 #include "websocket.h"
 #include "json.h"
 #include "led-matrix.h"
+#include "sound.h"
 #include "startup.h"
 
 #ifndef FIRMWARE_VERSION
@@ -96,6 +101,155 @@ static void InterruptHandler(int) {
     g_app_state->queue_not_empty.notify_all();
     g_app_state->queue_not_full.notify_all();
   }
+  StopSoundPlayer();
+}
+
+static std::string get_self_executable_path() {
+  char buf[PATH_MAX];
+  ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+  if (len > 0) {
+    buf[len] = '\0';
+    std::string path(buf);
+    const std::string deleted_suffix = " (deleted)";
+    if (path.size() >= deleted_suffix.size() &&
+        path.compare(path.size() - deleted_suffix.size(),
+                     deleted_suffix.size(), deleted_suffix) == 0) {
+      path.erase(path.size() - deleted_suffix.size());
+    }
+    return path;
+  }
+  return "";
+}
+
+static bool FetchURL(std::string current_url, std::string &out_data,
+                     int max_redirects = 5) {
+  for (int redirect = 0; redirect < max_redirects; ++redirect) {
+    size_t scheme_end = current_url.find("://");
+    if (scheme_end == std::string::npos) return false;
+    auto path_start = current_url.find('/', scheme_end + 3);
+    std::string base_url = current_url.substr(
+        0, path_start != std::string::npos ? path_start : current_url.length());
+    std::string path =
+        path_start != std::string::npos ? current_url.substr(path_start) : "/";
+
+    http::Client client(base_url);
+    if (!client.is_valid()) return false;
+    client.set_connection_timeout(30);
+    client.set_read_timeout(60);
+    client.set_default_headers({
+        {"User-Agent", "Tronberry-Updater/1.0"},
+        {"Accept", "application/octet-stream, */*"},
+    });
+
+    auto res = client.Get(path.c_str());
+    if (!res) return false;
+
+    if (res->status >= 300 && res->status < 400) {
+      std::string loc = res->get_header_value("location");
+      if (loc.empty()) return false;
+      if (loc.rfind("http://", 0) == 0 || loc.rfind("https://", 0) == 0) {
+        current_url = loc;
+      } else if (loc.front() == '/') {
+        current_url = base_url + loc;
+      } else {
+        current_url = base_url + "/" + loc;
+      }
+      continue;
+    }
+
+    if (res->status == 200) {
+      out_data = std::move(res->body);
+      return true;
+    }
+    return false;
+  }
+  return false;
+}
+
+static std::atomic<bool> g_update_in_progress{false};
+
+static void PerformSelfUpdate(const std::string &ota_url, AppState &state) {
+  bool expected = false;
+  if (!g_update_in_progress.compare_exchange_strong(expected, true)) {
+    Log(state, "Self-update already in progress, ignoring duplicate request");
+    return;
+  }
+
+  Log(state, "Starting self-update from URL: " + ota_url);
+  std::string self_path = get_self_executable_path();
+  if (self_path.empty()) {
+    std::cerr << "Self-update failed: unable to determine running binary path from /proc/self/exe"
+              << std::endl;
+    g_update_in_progress = false;
+    return;
+  }
+  Log(state, "Target binary path: " + self_path);
+
+  std::string binary_data;
+  if (!FetchURL(ota_url, binary_data)) {
+    std::cerr << "Self-update failed: could not download binary from " << ota_url
+              << std::endl;
+    g_update_in_progress = false;
+    return;
+  }
+
+  // Validate ELF magic: \x7f E L F
+  if (binary_data.size() < 1024 ||
+      static_cast<uint8_t>(binary_data[0]) != 0x7f ||
+      binary_data[1] != 'E' || binary_data[2] != 'L' ||
+      binary_data[3] != 'F') {
+    std::cerr << "Self-update failed: downloaded data is not a valid ELF binary (size="
+              << binary_data.size() << ")" << std::endl;
+    g_update_in_progress = false;
+    return;
+  }
+
+  std::string temp_path = self_path + ".new";
+  {
+    std::ofstream out(temp_path, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) {
+      std::cerr << "Self-update failed: cannot open temp file " << temp_path
+                << ": " << strerror(errno) << std::endl;
+      g_update_in_progress = false;
+      return;
+    }
+    out.write(binary_data.data(), binary_data.size());
+    out.flush();
+    if (!out.good()) {
+      std::cerr << "Self-update failed: error writing to " << temp_path
+                << std::endl;
+      unlink(temp_path.c_str());
+      g_update_in_progress = false;
+      return;
+    }
+  }
+
+  if (chmod(temp_path.c_str(), 0755) != 0) {
+    std::cerr << "Self-update failed: chmod on " << temp_path
+              << " failed: " << strerror(errno) << std::endl;
+    unlink(temp_path.c_str());
+    g_update_in_progress = false;
+    return;
+  }
+
+  if (rename(temp_path.c_str(), self_path.c_str()) != 0) {
+    std::cerr << "Self-update failed: rename " << temp_path << " to "
+              << self_path << " failed: " << strerror(errno) << std::endl;
+    unlink(temp_path.c_str());
+    g_update_in_progress = false;
+    return;
+  }
+
+  sync();
+  Log(state, "Self-update successful (" + std::to_string(binary_data.size()) +
+                 " bytes). Exiting for restart...");
+  std::cerr << "Self-update installed successfully. Exiting for restart."
+            << std::endl;
+
+  StopSoundPlayer();
+  state.running = false;
+  state.queue_not_empty.notify_all();
+  state.queue_not_full.notify_all();
 }
 
 static void DrawFrame(FrameCanvas *canvas, const uint8_t *frame_data, int width,
@@ -277,7 +431,7 @@ static int usage(const char *progname, const char *msg = NULL) {
     std::cerr << msg << std::endl;
   }
   std::cerr << "Fetch images over HTTP and display on RGB-Matrix" << std::endl;
-  std::cerr << "usage: " << progname << " <URL>" << std::endl;
+  std::cerr << "usage: " << progname << " <URL> [--verbose] [--no-startup-sound] [--volume <0-100>]" << std::endl;
 
   std::cerr << "\nGeneral LED matrix options:" << std::endl;
   PrintMatrixFlags(stderr);
@@ -287,6 +441,7 @@ static int usage(const char *progname, const char *msg = NULL) {
 int main(int argc, char *argv[]) {
   AppState state;
   g_app_state = &state;
+  InitSoundPlayer([&state](const std::string &msg) { Log(state, msg); });
 
   RGBMatrix::Options matrix_options;
   matrix_options.rows = 32;
@@ -298,17 +453,44 @@ int main(int argc, char *argv[]) {
 
   RuntimeOptions runtime_options;
   runtime_options.gpio_slowdown = 2;
-  runtime_options.drop_privileges = true;
+  runtime_options.drop_privileges = 0;  // Keep root privileges by default so audio devices (/dev/snd/*) remain accessible
 
+  int init_volume = 100;
+  if (const char *env = getenv("TRONBERRY_VOLUME"); env && *env) {
+    init_volume = std::atoi(env);
+  }
+
+  bool enable_startup_sound = true;
+  if (const char *env = getenv("TRONBERRY_NO_STARTUP_SOUND");
+      env && *env && strcmp(env, "0") != 0) {
+    enable_startup_sound = false;
+  }
+  if (const char *env = getenv("TRONBERRY_STARTUP_SOUND");
+      env && strcmp(env, "0") == 0) {
+    enable_startup_sound = false;
+  }
   std::vector<char *> new_argv(argv, argv + argc);
   for (auto it = new_argv.begin() + 1; it != new_argv.end();) {
     if (strcmp(*it, "--verbose") == 0) {
       state.verbose = true;
       it = new_argv.erase(it);
+    } else if (strcmp(*it, "--no-sound") == 0 ||
+               strcmp(*it, "--no-startup-sound") == 0) {
+      enable_startup_sound = false;
+      it = new_argv.erase(it);
+    } else if (strncmp(*it, "--volume=", 9) == 0) {
+      init_volume = std::atoi(*it + 9);
+      it = new_argv.erase(it);
+    } else if (strcmp(*it, "--volume") == 0 && (it + 1) != new_argv.end()) {
+      init_volume = std::atoi(*(it + 1));
+      it = new_argv.erase(it, it + 2);
     } else {
       ++it;
     }
   }
+  if (init_volume < 0) init_volume = 0;
+  if (init_volume > 100) init_volume = 100;
+  std::atomic<int> default_volume{init_volume};
   argc = new_argv.size();
   argv = new_argv.data();
 
@@ -341,6 +523,25 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
+  auto path_start = url.find('/', scheme_end + 3);
+  std::string host_port = url.substr(
+      scheme_end + 3,
+      path_start != std::string::npos ? (path_start - (scheme_end + 3))
+                                      : std::string::npos);
+  std::string http_base_url =
+      (scheme == "wss" ? "https://" : "http://") + host_port;
+
+  auto resolve_sound_url = [&](const std::string &sound) -> std::string {
+    if (sound.empty()) return "";
+    if (sound.rfind("http://", 0) == 0 || sound.rfind("https://", 0) == 0) {
+      return sound;
+    }
+    if (sound.front() == '/') {
+      return http_base_url + sound;
+    }
+    return http_base_url + "/" + sound;
+  };
+
   static std::atomic<int> next_dwell_secs(0);
   static std::atomic<int> ws_message_counter(0);
   static std::atomic<int> immediate_requests(0);
@@ -363,16 +564,20 @@ int main(int argc, char *argv[]) {
     int brightness;
     int dwell_secs;
     int counter = 0;
+    std::string sound_url;
+    int volume = -1;
   };
   std::deque<ResponseData> response_queue;
   const size_t max_queue_size = use_websocket ? 3 : 1;
   std::atomic<bool> startup_animation_playing(true);
 
   // Display the startup image
+  std::string startup_sound = enable_startup_sound ? GetStartupSoundPath() : "";
   ResponseData startup_response = {
       std::string(reinterpret_cast<const char *>(STARTUP_WEBP),
                   STARTUP_WEBP_LEN),
-      INITIAL_BRIGHTNESS, use_websocket ? 0 : INITIAL_DWELL_SECS, 0};
+      INITIAL_BRIGHTNESS, use_websocket ? 0 : INITIAL_DWELL_SECS, 0,
+      startup_sound, default_volume.load()};
   response_queue.push_back(std::move(startup_response));
 
   std::thread fetch_thread;
@@ -416,6 +621,7 @@ int main(int argc, char *argv[]) {
             client_info["mac"] = get_mac_address();
             client_info["hostname"] = get_hostname();
             client_info["image_url"] = url;
+            client_info["startup_sound"] = enable_startup_sound;
             json::Value client_info_msg;
             client_info_msg["client_info"] = std::move(client_info);
             Log(state, "Sending client info: " + client_info_msg.dump());
@@ -425,7 +631,7 @@ int main(int argc, char *argv[]) {
               Log(state, "Received image of size " +
                              std::to_string(msg.data.size()) + " bytes");
               ResponseData response = {
-                  msg.data, -1, next_dwell_secs.load(), 0};
+                  msg.data, -1, next_dwell_secs.load(), 0, ""};
               add_to_queue(std::move(response));
             } else {
               auto json_message = json::Value::parse(msg.data);
@@ -469,14 +675,54 @@ int main(int argc, char *argv[]) {
                   state.queue_not_full.notify_all();
                   immediate_requests++;
                 }
+              } else if (json_message.contains("ota_url") &&
+                         json_message["ota_url"].is_string()) {
+                std::string ota_url =
+                    resolve_sound_url(json_message["ota_url"].get<std::string>());
+                Log(state, "OTA update requested via WebSocket: " + ota_url);
+                if (!ota_url.empty()) {
+                  std::thread([ota_url, &state]() {
+                    PerformSelfUpdate(ota_url, state);
+                  }).detach();
+                }
               } else if (json_message.contains("reboot") &&
                          json_message["reboot"].is_boolean()) {
                 if (json_message["reboot"].get<bool>()) {
                   Log(state, "Reboot requested via WebSocket");
                   std::cerr << "Rebooting..." << std::endl;
+                  StopSoundPlayer();
                   sync();
                   reboot(RB_AUTOBOOT);
                 }
+              } else if (json_message.contains("sound") &&
+                         json_message["sound"].is_string()) {
+                std::string sound_str =
+                    json_message["sound"].get<std::string>();
+                int volume = default_volume.load();
+                if (json_message.contains("volume") &&
+                    json_message["volume"].is_number_integer()) {
+                  volume = json_message["volume"].get<int>();
+                  if (volume < 0) volume = 0;
+                  if (volume > 100) volume = 100;
+                  default_volume.store(volume);
+                }
+                if (!sound_str.empty()) {
+                  PlaySound(resolve_sound_url(sound_str), volume);
+                }
+              } else if (json_message.contains("volume") &&
+                         json_message["volume"].is_number_integer()) {
+                int vol = json_message["volume"].get<int>();
+                if (vol < 0) vol = 0;
+                if (vol > 100) vol = 100;
+                default_volume.store(vol);
+                Log(state, "Default volume updated via WebSocket to " +
+                               std::to_string(vol) + "%");
+              } else if (json_message.contains("startup_sound") &&
+                         json_message["startup_sound"].is_boolean()) {
+                enable_startup_sound =
+                    json_message["startup_sound"].get<bool>();
+                Log(state, "Startup sound setting updated to " +
+                               std::to_string(enable_startup_sound));
               } else if (json_message.contains("status") &&
                          json_message["status"].is_string() &&
                          json_message.contains("message") &&
@@ -564,6 +810,41 @@ int main(int argc, char *argv[]) {
           response.dwell_secs = 0;
         }
 
+        auto sound_hdr = res->get_header_value("Tronbyt-Sound", "");
+        if (!sound_hdr.empty()) {
+          response.sound_url = resolve_sound_url(sound_hdr);
+        }
+
+        auto volume_hdr = res->get_header_value("Tronbyt-Volume", "");
+        if (!volume_hdr.empty()) {
+          end_ptr = nullptr;
+          long v = std::strtol(volume_hdr.c_str(), &end_ptr, 10);
+          if (*end_ptr == '\0' && v >= 0 && v <= 100) {
+            response.volume = static_cast<int>(v);
+            default_volume.store(response.volume);
+          }
+        }
+
+        auto ota_hdr = res->get_header_value("Tronbyt-OTA-URL", "");
+        if (!ota_hdr.empty()) {
+          std::string ota_url = resolve_sound_url(ota_hdr);
+          Log(state, "OTA update requested via HTTP header: " + ota_url);
+          if (!ota_url.empty()) {
+            std::thread([ota_url, &state]() {
+              PerformSelfUpdate(ota_url, state);
+            }).detach();
+          }
+        }
+
+        auto reboot_hdr = res->get_header_value("Tronbyt-Reboot", "");
+        if (!reboot_hdr.empty() && (reboot_hdr == "true" || reboot_hdr == "1")) {
+          Log(state, "Reboot requested via HTTP header");
+          std::cerr << "Rebooting..." << std::endl;
+          StopSoundPlayer();
+          sync();
+          reboot(RB_AUTOBOOT);
+        }
+
         add_to_queue(std::move(response));
       }
     });
@@ -602,6 +883,11 @@ int main(int argc, char *argv[]) {
     }
 
     matrix->SetBrightness(state.brightness.load());
+
+    if (!response.sound_url.empty()) {
+      int vol = response.volume >= 0 ? response.volume : default_volume.load();
+      PlaySound(response.sound_url, vol);
+    }
 
     if (response.data.empty()) {
       continue;
@@ -675,6 +961,7 @@ int main(int argc, char *argv[]) {
   }
 
   Log(state, "Shutting down...");
+  ShutdownSoundPlayer();
   if (ws_client) {
     ws_client->stop();
   } else {

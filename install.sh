@@ -29,7 +29,7 @@ apply_flicker_fixes() {
     return
   fi
 
-  read -r -p "Apply Raspberry Pi optimizations to prevent LED matrix flickering? This will disable audio and Bluetooth, modify system files, and requires a reboot. [Y/n] " response
+  read -r -p "Apply Raspberry Pi optimizations to prevent LED matrix flickering? This will disable on-board audio (USB audio remains supported) and Bluetooth, modify system files, and requires a reboot. [Y/n] " response
   if [[ "$response" =~ ^([nN][oO]?)$ ]]; then
     echo "Skipping optimizations."
     return
@@ -77,7 +77,10 @@ apply_flicker_fixes
 
 # Parse optional username argument
 TARGET_USER=${1:-$(whoami)}
-HOME_DIR=$(eval echo "~$TARGET_USER")
+HOME_DIR=$(getent passwd "$TARGET_USER" | cut -d: -f6)
+if [ -z "$HOME_DIR" ]; then
+  HOME_DIR="/home/$TARGET_USER"
+fi
 INSTALL_DIR="$HOME_DIR/tronberry"
 
 echo "Using user: $TARGET_USER"
@@ -85,7 +88,18 @@ echo "Install path: $INSTALL_DIR"
 
 echo "Installing required packages..."
 sudo apt update
-sudo apt install -y ca-certificates curl jq libwebp7 libwebpdemux2
+sudo apt install -y ca-certificates curl jq libwebp7 libwebpdemux2 mpv alsa-utils
+
+# Unmute and configure sound card audio levels if audio hardware is present
+if command -v amixer >/dev/null 2>&1; then
+  echo "Checking audio cards and unmuting mixer levels..."
+  for card in $(aplay -l 2>/dev/null | grep -o 'card [0-9]' | cut -d' ' -f2 | sort -u); do
+    sudo amixer -c "$card" sset Master 85% unmute 2>/dev/null || true
+    sudo amixer -c "$card" sset PCM 85% unmute 2>/dev/null || true
+    sudo amixer -c "$card" sset Speaker 85% unmute 2>/dev/null || true
+  done
+  sudo alsactl store 2>/dev/null || true
+fi
 
 echo "Installing Tronberry..."
 if [ ! -d "$INSTALL_DIR" ]; then
@@ -120,16 +134,16 @@ if [ "$SHOULD_CREATE_SERVICE" = true ]; then
   read -r -p "Enter Tronbyt server URL [http://my-server:8000/device-id/next or ws://my-server:8000/device-id/ws]: " TRONBYT_URL
   TRONBYT_URL=${TRONBYT_URL:-http://192.168.68.42:8000/d8e59932/next}
 
-  read -r -p "Optionally enter additional command line flags for tronberry (e.g., --led-rows=128 --led-cols=64): " ADDITIONAL_FLAGS
+  read -r -p "Optionally enter additional command line flags for tronberry (e.g., --led-rows=64 --led-cols=128): " ADDITIONAL_FLAGS
 
   echo "Creating tronberry.service..."
   sudo bash -c "cat > $SERVICE_FILE" <<EOL
 [Unit]
 Description=Tronberry LED Matrix Service
-After=network-online.target
+After=network-online.target sound.target
 
 [Service]
-ExecStart=$INSTALL_DIR/tronberry $TRONBYT_URL $ADDITIONAL_FLAGS
+ExecStart=$INSTALL_DIR/tronberry $TRONBYT_URL --led-no-drop-privs $ADDITIONAL_FLAGS
 WorkingDirectory=$INSTALL_DIR
 StandardOutput=inherit
 StandardError=inherit

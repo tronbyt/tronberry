@@ -78,6 +78,13 @@ The application requires `sudo` to access the Raspberry Pi's GPIO hardware. Addi
     -   Adjust the display brightness.
     -   Set the "dwell time" for the next image.
     -   Request that the next image be displayed "immediately," which interrupts the currently playing animation.
+    -   Trigger sound notifications (`sound` URL/path and optional `volume`).
+    -   Update speaker playback volume dynamically (`volume`).
+    -   Configure startup sound (`startup_sound`).
+    -   Reboot the device (`reboot`).
+    -   Trigger self-updating over-the-air firmware upgrades (`ota_url`).
+-   **Audio Architecture:** A dedicated `SoundPlayer` worker thread asynchronously queues and plays sound requests via `mpv` with ALSA (`--ao=alsa`, or `ffplay`) without stalling the display thread. Tronberry defaults to `drop_privileges = 0` to preserve root access to `/dev/snd/*` audio devices. On-board Raspberry Pi audio (`snd_bcm2835`) is disabled to eliminate HUB75 matrix flickering, while external USB audio (`snd-usb-audio`) is fully supported. Sound hardware levels are initialized and persisted via ALSA `amixer`/`alsactl`.
+-   **Over-The-Air (OTA) Self-Updates:** Tronberry supports automated self-updating over-the-air firmware upgrades triggered by Tronbyt Server via WebSocket (`{"ota_url": "..."}`) or HTTP polling header (`Tronbyt-OTA-URL: ...`). A background worker downloads the binary with HTTP redirect support, validates the ELF executable header (`\x7fELF`), writes to `<binary>.new`, sets permissions to `0755`, and atomically replaces the running binary (`/proc/self/exe`) via `rename()`. After replacement, Tronberry cleanly shuts down display and sound subsystems and exits code 0. When managed by systemd (`Restart=always`), the service manager relaunches Tronberry with the new binary in under 1 second without an OS reboot.
 -   **Bidirectional Communication:** The client sends `queued` and `displaying` status messages back to the server over the WebSocket to confirm receipt and rendering of images.
 
 ### Continuous Integration
