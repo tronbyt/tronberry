@@ -570,6 +570,11 @@ int main(int argc, char *argv[]) {
   std::deque<ResponseData> response_queue;
   const size_t max_queue_size = use_websocket ? 3 : 1;
   std::atomic<bool> startup_animation_playing(true);
+  // When the image currently on screen is due to end (guarded by
+  // queue_mutex). The HTTP fetch thread waits for this so that time-sensitive
+  // apps such as clocks are rendered just before they are shown rather than a
+  // full dwell period earlier.
+  std::chrono::steady_clock::time_point display_deadline;
 
   // Display the startup image
   std::string startup_sound = enable_startup_sound ? GetStartupSoundPath() : "";
@@ -766,7 +771,34 @@ int main(int argc, char *argv[]) {
 
     fetch_thread = std::thread([&, client, path]() mutable {
       int retry_count = 0;
+      // Start each fetch this long before the current image ends: a safety
+      // margin plus the slowest recent fetch (the server renders on request).
+      constexpr auto kPrefetchMargin = std::chrono::seconds(2);
+      constexpr size_t kFetchHistory = 8;
+      std::deque<std::chrono::steady_clock::duration> fetch_durations;
       while (state.running) {
+        {
+          std::unique_lock<std::mutex> lock(queue_mutex);
+          state.queue_not_full.wait(lock, [&]() {
+            return response_queue.size() < max_queue_size || !state.running;
+          });
+          // During the startup animation, fetch at once so the first real
+          // image replaces it as soon as it is ready.
+          if (!startup_animation_playing.load()) {
+            std::chrono::steady_clock::duration slowest{};
+            for (auto d : fetch_durations) {
+              slowest = std::max(slowest, d);
+            }
+            state.queue_not_full.wait_until(
+                lock, display_deadline - kPrefetchMargin - slowest,
+                [&]() { return !state.running; });
+          }
+        }
+        if (!state.running) {
+          break;
+        }
+
+        auto fetch_start = std::chrono::steady_clock::now();
         auto res = client->Get(path.c_str());
         if (!res || res->status != 200) {
           std::cerr << "Failed to fetch image from URL: " << url << std::endl;
@@ -785,6 +817,11 @@ int main(int argc, char *argv[]) {
           continue;
         }
         retry_count = 0;  // Reset retry_count on success
+        fetch_durations.push_back(std::chrono::steady_clock::now() -
+                                  fetch_start);
+        if (fetch_durations.size() > kFetchHistory) {
+          fetch_durations.pop_front();
+        }
 
         ResponseData response;
         response.data = std::move(res->body);
@@ -862,6 +899,9 @@ int main(int argc, char *argv[]) {
 
       response = std::move(response_queue.front());
       response_queue.pop_front();
+      // A dwell of 0 has no known end, so the next fetch starts right away.
+      display_deadline = std::chrono::steady_clock::now() +
+                         std::chrono::seconds(response.dwell_secs);
     }
     state.queue_not_full.notify_one();
 

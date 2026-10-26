@@ -73,6 +73,7 @@ The application requires `sudo` to access the Raspberry Pi's GPIO hardware. Addi
 
 -   **Multithreading:** The application is multithreaded. A `fetch_thread` handles HTTP requests, while the main thread manages the display loop and WebSocket client.
 -   **Producer-Consumer Queue:** A `std::queue` (`response_queue`) is used to pass image data from the fetching thread to the display thread, decoupling network operations from rendering.
+-   **Just-in-Time HTTP Fetch:** In HTTP mode the fetch thread waits until shortly before the current image's dwell ends (a 2 s margin plus the slowest of the last 8 fetches) before requesting the next one, so time-sensitive apps such as clocks are rendered just before they are shown instead of a full dwell period early.
 -   **WebSocket Handling:** The `IXWebSocket` library is used for asynchronous WebSocket communication. It operates on its own thread and uses callbacks (`setOnMessageCallback`) to handle incoming messages.
 -   **Remote Control:** When using WebSockets, the server can send JSON messages to:
     -   Adjust the display brightness.
