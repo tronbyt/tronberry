@@ -707,7 +707,14 @@ int main(int argc, char *argv[]) {
                   default_volume.store(volume);
                 }
                 if (!sound_str.empty()) {
-                  PlaySound(resolve_sound_url(sound_str), volume);
+                  std::unique_lock<std::mutex> lock(queue_mutex);
+                  if (!response_queue.empty()) {
+                    Log(state, "Queued image present - deferring WS sound until display: " + sound_str);
+                    response_queue.back().sound_url = resolve_sound_url(sound_str);
+                    response_queue.back().volume = volume;
+                  } else {
+                    PlaySound(resolve_sound_url(sound_str), volume);
+                  }
                 }
               } else if (json_message.contains("volume") &&
                          json_message["volume"].is_number_integer()) {
